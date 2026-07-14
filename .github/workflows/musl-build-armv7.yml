@@ -1,0 +1,43 @@
+name: Musl Build ARMv7  
+  
+on:  
+  push:  
+    branches: [ "master" ]  
+  pull_request:  
+    branches: [ "master" ]  
+  workflow_dispatch:  
+  
+jobs:  
+  build:  
+    runs-on: ubuntu-latest  
+    steps:  
+      - name: Checkout  
+        uses: actions/checkout@v4  
+        
+      - name: Set up QEMU  
+        uses: docker/setup-qemu-action@v2  
+        
+      - name: Set up Docker Buildx  
+        uses: docker/setup-buildx-action@v2  
+        
+      - name: Build ARMv7 Docker image  
+        uses: docker/build-push-action@v3  
+        with:  
+          context: .  
+          file: docker/Dockerfile.revad  
+          platforms: linux/arm/v7  
+          load: true  
+          tags: revad:armv7-builder  
+          build-args: |  
+            GIT_COMMIT=${{ github.sha }}  
+            VERSION=${{ github.ref_name }}  
+        
+      - name: Build static binary in container  
+        run: |  
+          docker run --rm -v $(pwd):/workspace revad:armv7-builder sh -c "cd /workspace && apk add --no-cache musl-tools && make revad-static-musl"  
+        
+      - name: Upload artifact  
+        uses: actions/upload-artifact@v4  
+        with:  
+          name: revad-armv7-musl  
+          path: ./cmd/revad/revad
