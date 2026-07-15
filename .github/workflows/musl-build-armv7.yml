@@ -34,7 +34,7 @@ jobs:
         
       - name: Build static binary in container  
         run: |
-          docker run --rm --platform linux/arm/v7 --entrypoint "" -v $(pwd):/workspace revad:armv7-builder sh -c "cd /workspace && apk add --no-cache build-base bash && make revad-static-musl" 
+          docker run --rm --platform linux/arm/v7 --entrypoint "" -v $(pwd):/workspace revad:armv7-builder sh -c "cd /workspace && apk add --no-cache build-base bash musl-dev && make revad-static-musl" 
         
       - name: Upload artifact  
         uses: actions/upload-artifact@v4  
