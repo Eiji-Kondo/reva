@@ -22,7 +22,7 @@ jobs:
         
       - name: Build static binary in container  
         run: |  
-          docker run --rm --platform linux/arm/v7 --entrypoint "" -v $(pwd):/workspace golang:1.25.8-bookworm sh -c "cd /workspace && apt update && apt install -y musl-tools && make revad-static-musl"  
+          docker run --rm --platform linux/arm/v7 --entrypoint "" -v $(pwd):/workspace golang:1.25.8-bookworm sh -c "cd /workspace && apt update && apt install -y musl-tools && CGO_ENABLED=1 CC=musl-gcc go build -tags 'sqlite_omit_load_extension' -buildvcs=false -ldflags '-extldflags -static' -o ./cmd/revad/revad ./cmd/revad/main"  
         
       - name: Upload artifact  
         uses: actions/upload-artifact@v4  
