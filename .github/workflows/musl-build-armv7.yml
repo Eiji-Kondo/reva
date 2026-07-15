@@ -34,7 +34,7 @@ jobs:
         
       - name: Build static binary in container  
         run: |
-          docker run --rm --platform linux/arm/v7 --entrypoint "" -v $(pwd):/workspace revad:armv7-builder sh -c "cd /workspace && apk add --no-cache build-base bash musl-dev && CC=gcc make revad-static-musl" 
+          docker run --rm --platform linux/arm/v7 --entrypoint "" -v $(pwd):/workspace revad:armv7-builder sh -c "cd /workspace && apk add --no-cache build-base bash musl-dev && CGO_ENABLED=1 CC=gcc go build -tags 'sqlite_omit_load_extension' -ldflags '-extldflags -static' -o ./cmd/revad/revad ./cmd/revad/main" 
         
       - name: Upload artifact  
         uses: actions/upload-artifact@v4  
