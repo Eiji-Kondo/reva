@@ -24,13 +24,11 @@ jobs:
         
       - name: Build reva CLI for ARMv7  
         run: |  
-          CGO_ENABLED=1 \  
-          CC=arm-linux-gnueabihf-gcc \  
-          GOARCH=arm \  
-          GOARM=7 \  
-          go build -tags "sqlite_omit_load_extension" \  
-          -ldflags "-extldflags '-static'" \  
-          -o ./cmd/reva/reva-armv7 ./cmd/reva  
+          CGO_ENABLED=1  
+          CC=arm-linux-gnueabihf-gcc  
+          GOARCH=arm  
+          GOARM=7  
+          go build -tags "sqlite_omit_load_extension" -ldflags "-extldflags '-static'" -o ./cmd/reva/reva-armv7 ./cmd/reva  
         
       - name: Upload artifact  
         uses: actions/upload-artifact@v4  
