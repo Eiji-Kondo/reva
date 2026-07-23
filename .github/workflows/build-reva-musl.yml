@@ -1,0 +1,31 @@
+name: Build reva CLI with musl  
+  
+on:  
+  push:  
+    branches: ["*"]  
+  pull_request:  
+  workflow_dispatch:  
+  
+jobs:  
+  build:  
+    runs-on: ubuntu-latest  
+    steps:  
+      - name: Checkout  
+        uses: actions/checkout@v4  
+        
+      - name: Setup Go environment  
+        uses: actions/setup-go@v4  
+        with:  
+          go-version-file: go.mod  
+        
+      - name: Install musl-tools  
+        run: sudo apt install musl-tools  
+        
+      - name: Build reva CLI with musl  
+        run: CGO_ENABLED=1 CC=musl-gcc go build -tags "sqlite_omit_load_extension" -ldflags "-extldflags '-static'" -o ./cmd/reva/reva ./cmd/reva  
+        
+      - name: Upload artifact  
+        uses: actions/upload-artifact@v4  
+        with:  
+          name: reva-musl  
+          path: ./cmd/reva/reva
