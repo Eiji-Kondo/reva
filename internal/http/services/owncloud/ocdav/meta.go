@@ -50,6 +50,8 @@ func (h *MetaHandler) Handler(s *svc) http.Handler {
 		if rawPath == "" {  
 		    rawPath = r.URL.Path // フォールバック(エンコード文字がない場合、RawPathは空になる)  
 		}  
+
+		log.Debug().Str("raw_path", rawPath).Msg("meta: debug")
 		  
 		const metaMarker = "/meta/"  
 		idx := strings.Index(rawPath, metaMarker)  
