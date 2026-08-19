@@ -46,6 +46,7 @@ func (h *MetaHandler) Handler(s *svc) http.Handler {
 		// 👈 ここから書き換える
 		// エンコードが維持された生のパス（/remote.php/dav/meta/...）を取得
 		rawPath := r.URL.RawPath
+		log.Debug().Str("raw_path_before_shift", rawPath).Msg("meta: debug") // ← ここに追加 
 		if rawPath == "" {
 			rawPath = r.URL.Path
 		}
