@@ -1329,6 +1329,7 @@ func (fs *localfs) DownloadRevision(ctx context.Context, ref *provider.Reference
 }
 
 func (fs *localfs) RestoreRevision(ctx context.Context, ref *provider.Reference, revisionKey string) error {
+	log := appctx.GetLogger(ctx) 
 	np, err := fs.resolve(ctx, ref)
 	if err != nil {
 		return errors.Wrap(err, "localfs: error resolving ref")
@@ -1340,6 +1341,7 @@ func (fs *localfs) RestoreRevision(ctx context.Context, ref *provider.Reference,
 
 	versionsDir := fs.wrapVersions(ctx, np)
 	vp := path.Join(versionsDir, revisionKey)
+	log.Debug().Str("np", np).Str("versionsDir", versionsDir).Str("vp", vp).Msg("restore: debug")
 	np = fs.wrap(ctx, np)
 
 	// check revision exists
