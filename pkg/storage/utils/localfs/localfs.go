@@ -1261,7 +1261,7 @@ func (fs *localfs) ListRevisions(ctx context.Context, ref *provider.Reference) (
 	np, err := fs.resolve(ctx, ref)  
 	if err != nil {  
 		return nil, errors.Wrap(err, "localfs: error resolving ref")  
-	}  
+	}
   
 	if fs.isShareFolder(ctx, np) {  
 		return nil, errtypes.PermissionDenied("localfs: cannot list revisions under the virtual share folder")  
@@ -1290,7 +1290,7 @@ func (fs *localfs) ListRevisions(ctx context.Context, ref *provider.Reference) (
 		// versions resemble v12345678  
 		version := mds[i].Name()[1:]  
   
-		mtime, err := strconv.ParseInt(version, 10, 64)  
+		mtime, err := strconv.ParseInt(version, 10, 64)
 		if err != nil {  
 			continue  
 		}  
@@ -1315,7 +1315,7 @@ func (fs *localfs) DownloadRevision(ctx context.Context, ref *provider.Reference
 	}
 
 	versionsDir := fs.wrapVersions(ctx, np)
-	vp := path.Join(versionsDir, revisionKey)
+	vp := path.Join(versionsDir, "v"+revisionKey)
 
 	r, err := os.Open(vp)
 	if err != nil {
@@ -1329,7 +1329,6 @@ func (fs *localfs) DownloadRevision(ctx context.Context, ref *provider.Reference
 }
 
 func (fs *localfs) RestoreRevision(ctx context.Context, ref *provider.Reference, revisionKey string) error {
-	log := appctx.GetLogger(ctx) 
 	np, err := fs.resolve(ctx, ref)
 	if err != nil {
 		return errors.Wrap(err, "localfs: error resolving ref")
@@ -1340,8 +1339,7 @@ func (fs *localfs) RestoreRevision(ctx context.Context, ref *provider.Reference,
 	}
 
 	versionsDir := fs.wrapVersions(ctx, np)
-	vp := path.Join(versionsDir, revisionKey)
-	log.Debug().Str("np", np).Str("versionsDir", versionsDir).Str("vp", vp).Msg("restore: debug")
+	vp := path.Join(versionsDir, "v"+revisionKey)
 	np = fs.wrap(ctx, np)
 
 	// check revision exists
