@@ -1372,32 +1372,42 @@ func (s *service) ListRecycle(ctx context.Context, req *provider.ListRecycleRequ
 	return res, nil
 }
 
-func (s *service) RestoreRecycleItem(ctx context.Context, req *provider.RestoreRecycleItemRequest) (*provider.RestoreRecycleItemResponse, error) {
-	// TODO(labkode): CRITICAL: fill recycle info with storage provider.
-	ref, err := s.unwrap(ctx, req.Ref)
-	if err != nil {
-		return nil, err
-	}
-	key, itemPath := router.ShiftPath(req.Key)
-	if err := s.storage.RestoreRecycleItem(ctx, ref.GetPath(), key, itemPath, req.RestoreRef); err != nil {
-		var st *rpc.Status
-		switch err.(type) {
-		case errtypes.IsNotFound:
-			st = status.NewNotFound(ctx, "path not found when restoring recycle bin item")
-		case errtypes.PermissionDenied:
-			st = status.NewPermissionDenied(ctx, err, "permission denied")
-		default:
-			st = status.NewInternal(ctx, err, "error restoring recycle bin item")
-		}
-		return &provider.RestoreRecycleItemResponse{
-			Status: st,
-		}, nil
-	}
-
-	res := &provider.RestoreRecycleItemResponse{
-		Status: status.NewOK(ctx),
-	}
-	return res, nil
+func (s *service) RestoreRecycleItem(ctx context.Context, req *provider.RestoreRecycleItemRequest) (*provider.RestoreRecycleItemResponse, error) {  
+	ref, err := s.unwrap(ctx, req.Ref)  
+	if err != nil {  
+		return nil, err  
+	}  
+  
+	restoreRef := req.RestoreRef  
+	if restoreRef != nil {  
+		restoreRef, err = s.unwrap(ctx, restoreRef)  
+		if err != nil {  
+			return &provider.RestoreRecycleItemResponse{  
+				Status: status.NewInternal(ctx, err, "error unwrapping restore ref"),  
+			}, nil  
+		}  
+	}  
+  
+	key, itemPath := router.ShiftPath(req.Key)  
+	if err := s.storage.RestoreRecycleItem(ctx, ref.GetPath(), key, itemPath, restoreRef); err != nil {  
+		var st *rpc.Status  
+		switch err.(type) {  
+		case errtypes.IsNotFound:  
+			st = status.NewNotFound(ctx, "path not found when restoring recycle bin item")  
+		case errtypes.PermissionDenied:  
+			st = status.NewPermissionDenied(ctx, err, "permission denied")  
+		default:  
+			st = status.NewInternal(ctx, err, "error restoring recycle bin item")  
+		}  
+		return &provider.RestoreRecycleItemResponse{  
+			Status: st,  
+		}, nil  
+	}  
+  
+	res := &provider.RestoreRecycleItemResponse{  
+		Status: status.NewOK(ctx),  
+	}  
+	return res, nil  
 }
 
 func (s *service) PurgeRecycle(ctx context.Context, req *provider.PurgeRecycleRequest) (*provider.PurgeRecycleResponse, error) {
