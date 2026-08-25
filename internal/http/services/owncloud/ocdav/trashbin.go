@@ -200,7 +200,8 @@ func (h *TrashbinHandler) Handler(s *svc) http.Handler {
 			r = r.WithContext(ctx)
 
 			// TODO make request.php optional in destination header
-			dst, err := extractDestination(r, "")
+			dst, err := extractDestination(r, s.c.WebdavNamespace)
+
 			if err != nil {
 				w.WriteHeader(http.StatusBadRequest)
 				return
