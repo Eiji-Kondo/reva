@@ -345,33 +345,94 @@ func addAccessHeaders(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func extractDestination(r *http.Request, ns string) (string, error) {
-	dstHeader := r.Header.Get(HeaderDestination)
-	if dstHeader == "" {
-		return "", errors.Wrap(errInvalidValue, "destination header is empty")
-	}
-	dstURL, err := url.ParseRequestURI(dstHeader)
-	if err != nil {
-		return "", errors.Wrap(errInvalidValue, err.Error())
-	}
+func extractDestination(r *http.Request, ns string) (string, error) {  
+	dstHeader := r.Header.Get(HeaderDestination)  
+	if dstHeader == "" {  
+		return "", errors.Wrap(errInvalidValue, "destination header is empty")  
+	}  
+	dstURL, err := url.ParseRequestURI(dstHeader)  
+	if err != nil {  
+		return "", errors.Wrap(errInvalidValue, err.Error())  
+	}  
+  
+	baseURI := r.Context().Value(ctxKeyBaseURI).(string)  
+  
+	destination := strings.TrimPrefix(dstURL.Path, baseURI)  
+  
+	if destination == dstURL.Path && baseURI != "" {  
+		// baseURI did not match: Destination points to a different DAV subtree  
+		// (e.g. request came in via /dav/spaces/... but Destination uses /dav/files/<user>/...).  
+		// Try to resolve based on well-known subtree prefixes instead.  
+		normalized, ok := normalizeCrossTreeDestination(r.Context(), dstURL.Path)  
+		if !ok {  
+			return "", errors.Wrap(errInvalidValue, "destination is outside of any known namespace")  
+		}  
+		return normalized, nil  
+	}  
+  
+	// If the destination is in a spaces format, we replace with the space path  
+	dstSpaceID, dstRelPath := router.ShiftPath(destination)  
+	_, spaceRoot, ok := spaces.DecodeStorageSpaceIDToPath(dstSpaceID)  
+	if ok && ns != "/public" {  
+		destination = path.Join(spaceRoot, dstRelPath)  
+	} else {  
+		// If it is non-spaces, we join the namespace  
+		destination = path.Join(ns, destination)  
+	}  
+  
+	return destination, nil  
+}  
 
-	baseURI := r.Context().Value(ctxKeyBaseURI).(string)
-	// TODO check if path is on same storage, return 502 on problems, see https://tools.ietf.org/html/rfc4918#section-9.9.4
-	// Strip the base URI from the destination. The destination might contain redirection prefixes which need to be handled
-	destination := strings.TrimPrefix(dstURL.Path, baseURI)
 
-	// If the destination is in a spaces format, we replace with the space path
-	dstSpaceID, dstRelPath := router.ShiftPath(destination)
-	_, spaceRoot, ok := spaces.DecodeStorageSpaceIDToPath(dstSpaceID)
-	if ok && ns != "/public" {
-		destination = path.Join(spaceRoot, dstRelPath)
-	} else {
-		// If it is non-spaces, we join the namespace
-		destination = path.Join(ns, destination)
-	}
-
-	return destination, nil
+func resolveUserHome(ctx context.Context, username string) (string, bool) {  
+	gc, err := pool.GetGatewayServiceClient(pool.Endpoint(sharedconf.GetGatewaySVC("")))  
+	if err != nil {  
+		return "", false  
+	}  
+	res, err := gc.GetHome(ctx, &provider.GetHomeRequest{})  
+	if err != nil || res.Status.Code != rpc.Code_CODE_OK {  
+		return "", false  
+	}  
+	return res.Path, true  
 }
+
+// normalizeCrossTreeDestination resolves a Destination path that belongs to a  
+// different DAV subtree than the current request (e.g. /dav/files/<user>/...  
+// while the request came in through /dav/spaces/...). It returns the resolved  
+// CS3 path and true if successful.  
+func normalizeCrossTreeDestination(ctx context.Context, p string) (string, bool) {  
+	// strip well-known DAV prefixes: /remote.php/dav or /remote.php/webdav  
+	for _, prefix := range []string{"/remote.php/dav", "/remote.php/webdav"} {  
+		if !strings.HasPrefix(p, prefix) {  
+			continue  
+		}  
+		rest := strings.TrimPrefix(p, prefix)  
+  
+		head, tail := router.ShiftPath(rest)  
+		switch head {  
+		case "files":  
+			// /dav/files/<username>/<rel path> -> need the user's home path  
+			username, relPath := router.ShiftPath(tail)  
+			home, ok := resolveUserHome(ctx, username)  
+			if !ok {  
+				return "", false  
+			}  
+			return path.Join(home, relPath), true  
+		case "spaces":  
+			spaceID, relPath := router.ShiftPath(tail)  
+			_, spaceRoot, ok := spaces.DecodeStorageSpaceIDToPath(spaceID)  
+			if !ok {  
+				return "", false  
+			}  
+			return path.Join(spaceRoot, relPath), true  
+		default:  
+			// webdav namespace (no explicit "files"/"spaces" segment) — same as rest  
+			return rest, true  
+		}  
+	}  
+	return "", false  
+}
+
 
 // replaceAllStringSubmatchFunc is taken from 'Go: Replace String with Regular Expression Callback'
 // see: https://elliotchance.medium.com/go-replace-string-with-regular-expression-callback-f89948bad0bb
