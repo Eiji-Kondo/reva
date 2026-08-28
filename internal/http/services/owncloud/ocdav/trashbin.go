@@ -83,7 +83,7 @@ func (h *TrashbinHandler) handleTrashbinSpaces(s *svc, w http.ResponseWriter, r 
 	if key != "" && r.Method == MethodMove {
 		// find path in url relative to trash base
 		// TODO make request.php optional in destination header
-		dst, err := extractDestination(r, "")
+		dst, err := extractDestination(r, base)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -200,7 +200,7 @@ func (h *TrashbinHandler) Handler(s *svc) http.Handler {
 			r = r.WithContext(ctx)
 
 			// TODO make request.php optional in destination header
-			dst, err := extractDestination(r, s.c.WebdavNamespace)
+			dst, err := extractDestination(r, basePath)
 
 			if err != nil {
 				w.WriteHeader(http.StatusBadRequest)
