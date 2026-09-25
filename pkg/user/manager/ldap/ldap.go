@@ -343,7 +343,7 @@ func (m *manager) FindUsers(ctx context.Context, query string, filters []*userpb
 		}
 
 		gidNumber := m.c.Nobody
-		gidValue := sr.Entries[0].GetEqualFoldAttributeValue(m.c.Schema.GIDNumber)
+		gidValue := entry.GetEqualFoldAttributeValue(m.c.Schema.GIDNumber)
 		if gidValue != "" {
 			gidNumber, err = strconv.ParseInt(gidValue, 10, 64)
 			if err != nil {
@@ -351,7 +351,7 @@ func (m *manager) FindUsers(ctx context.Context, query string, filters []*userpb
 			}
 		}
 		uidNumber := m.c.Nobody
-		uidValue := sr.Entries[0].GetEqualFoldAttributeValue(m.c.Schema.UIDNumber)
+		uidValue := entry.GetEqualFoldAttributeValue(m.c.Schema.UIDNumber)
 		if uidValue != "" {
 			uidNumber, err = strconv.ParseInt(uidValue, 10, 64)
 			if err != nil {
