@@ -236,10 +236,14 @@ func (m *manager) GetGroupByClaim(ctx context.Context, claim, value string, skip
 		}
 	}
 
-	gidNumber, err := strconv.ParseInt(sr.Entries[0].GetEqualFoldAttributeValue(m.c.Schema.GIDNumber), 10, 64)
-	if err != nil {
-		return nil, err
-	}
+gidNumber := m.c.Nobody  
+gidValue := sr.Entries[0].GetEqualFoldAttributeValue(m.c.Schema.GIDNumber)  
+if gidValue != "" {  
+    gidNumber, err = strconv.ParseInt(gidValue, 10, 64)  
+    if err != nil {  
+        return nil, err  
+    }  
+}
 
 	g := &grouppb.Group{
 		Id:          id,
@@ -290,9 +294,13 @@ func (m *manager) FindGroups(ctx context.Context, query string, skipFetchingMemb
 			}
 		}
 
-		gidNumber, err := strconv.ParseInt(entry.GetEqualFoldAttributeValue(m.c.Schema.GIDNumber), 10, 64)
-		if err != nil {
-			return nil, err
+		gidNumber := m.c.Nobody  
+		gidValue := entry.GetEqualFoldAttributeValue(m.c.Schema.GIDNumber)  
+		if gidValue != "" {  
+			gidNumber, err = strconv.ParseInt(gidValue, 10, 64)  
+			if err != nil {  
+				return nil, err  
+			}  
 		}
 
 		g := &grouppb.Group{
