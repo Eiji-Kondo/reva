@@ -72,8 +72,10 @@ type attributes struct {
 	Mail string `mapstructure:"mail"`
 	// Displayname is the Human readable name, e.g. `Database Admins`
 	DisplayName string `mapstructure:"displayName"`
-	// GIDNumber is a numeric id that maps to a filesystem gid, eg. 654321
-	GIDNumber string `mapstructure:"gidNumber"`
+	// GIDNumber is a numeric id that maps to a filesystem gid, eg. 654321  
+	GIDNumber string `mapstructure:"gidNumber"`  
+	// Username is the attribute on a user entry used as member id, typically `uid`  
+	Username string `mapstructure:"username"`
 }
 
 // Default attributes (Active Directory).
@@ -98,7 +100,10 @@ func New(ctx context.Context, m map[string]any) (group.Manager, error) {
 	if c.FindFilter == "" {
 		c.FindFilter = c.GroupFilter
 	}
-	c.MemberFilter = strings.ReplaceAll(c.MemberFilter, "%s", "{{.OpaqueId}}")
+	c.MemberFilter = strings.ReplaceAll(c.MemberFilter, "%s", "{{.OpaqueId}}")  
+	if c.Schema.Username == "" {  
+		c.Schema.Username = c.Schema.CN  
+	}
 
 	mgr := &manager{
 		c: &c,
@@ -236,9 +241,9 @@ func (m *manager) GetGroupByClaim(ctx context.Context, claim, value string, skip
 		}
 	}
 
-gidNumber := m.c.Nobody  
-gidValue := sr.Entries[0].GetEqualFoldAttributeValue(m.c.Schema.GIDNumber)  
-if gidValue != "" {  
+	gidNumber := m.c.Nobody  
+	gidValue := sr.Entries[0].GetEqualFoldAttributeValue(m.c.Schema.GIDNumber)  
+	if gidValue != "" {  
     gidNumber, err = strconv.ParseInt(gidValue, 10, 64)  
     if err != nil {  
         return nil, err  
@@ -329,7 +334,7 @@ func (m *manager) GetMembers(ctx context.Context, gid *grouppb.GroupId) ([]*user
 		m.c.BaseDN,
 		ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
 		m.getMemberFilter(gid),
-		[]string{m.c.Schema.CN}, // TODO use DN to look up user id
+		[]string{m.c.Schema.Username}, // TODO use DN to look up user id
 		nil,
 	)
 
@@ -342,7 +347,7 @@ func (m *manager) GetMembers(ctx context.Context, gid *grouppb.GroupId) ([]*user
 	for _, entry := range sr.Entries {
 		// FIXME this makes the group members use the cn, not an immutable id
 		users = append(users, &userpb.UserId{
-			OpaqueId: entry.GetEqualFoldAttributeValue(m.c.Schema.CN),
+			OpaqueId: entry.GetEqualFoldAttributeValue(m.c.Schema.Username),
 			Idp:      m.c.Idp,
 			Type:     userpb.UserType_USER_TYPE_PRIMARY,
 		})
