@@ -76,6 +76,7 @@ type attributes struct {
 	UIDNumber string `mapstructure:"uidNumber"`
 	// GIDNumber is a numeric id that maps to a filesystem gid, eg. 654321
 	GIDNumber string `mapstructure:"gidNumber"`
+	GroupName string `mapstructure:"groupname"` // GetUserGroups用、デフォルト "cn"
 }
 
 // Default attributes (Active Directory).
@@ -111,6 +112,10 @@ func (c *config) ApplyDefaults() {
 
 	if c.Nobody == 0 {
 		c.Nobody = 99
+	}
+	// 案B: ApplyDefaults/Configureでフォールバック
+	if c.Schema.GroupName == "" {  
+		c.Schema.GroupName = c.Schema.CN  // 後方互換  
 	}
 }
 
@@ -399,7 +404,7 @@ func (m *manager) GetUserGroups(ctx context.Context, uid *userpb.UserId) ([]stri
 		m.c.BaseDN,
 		ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
 		m.getGroupFilter(uid),
-		[]string{m.c.Schema.CN}, // TODO use DN to look up group id
+		[]string{m.c.Schema.GroupName}, // TODO use DN to look up group id
 		nil,
 	)
 
@@ -414,7 +419,7 @@ func (m *manager) GetUserGroups(ctx context.Context, uid *userpb.UserId) ([]stri
 		// FIXME this makes the users groups use the cn, not an immutable id
 		// FIXME 1. use the memberof or members attribute of a user to get the groups
 		// FIXME 2. ook up the id for each group
-		groups = append(groups, entry.GetEqualFoldAttributeValue(m.c.Schema.CN))
+		groups = append(groups, entry.GetEqualFoldAttributeValue(m.c.Schema.GroupName))
 	}
 
 	return groups, nil
