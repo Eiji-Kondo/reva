@@ -1297,7 +1297,7 @@ func (fs *localfs) ListRevisions(ctx context.Context, ref *provider.Reference) (
 		revisions = append(revisions, &provider.FileVersion{  
 			Key:   version,  
 			Size:  uint64(mds[i].Size()),  
-			Mtime: uint64(mtime),  
+			Mtime: uint64(mtime / 1000),
 			Etag:  calcEtag(ctx, mds[i]),  
 		})  
 	}  
@@ -1410,9 +1410,14 @@ func (fs *localfs) convertToRecycleItem(ctx context.Context, rp string, md os.Fi
 		Key:  md.Name(),
 		Ref:  &provider.Reference{Path: filePath},
 		Size: uint64(md.Size()),
-		DeletionTime: &types.Timestamp{
-			Seconds: uint64(ttime),
-		},
+		DeletionTime: msToTimestamp(ttime),
+	}
+}
+
+func msToTimestamp(ms int64) *types.Timestamp {
+	return &types.Timestamp{
+		Seconds: uint64(ms / 1000),
+		Nanos:   uint32(ms%1000) * uint32(time.Millisecond),
 	}
 }
 
