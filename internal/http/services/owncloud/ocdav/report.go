@@ -110,22 +110,27 @@ func (s *svc) doFilterFiles(w http.ResponseWriter, r *http.Request, ff *reportFi
 				log.Error().Err(err).Msg("error getting resource info")
 				continue
 			}
-			if statRes.Status.Code != rpcv1beta1.Code_CODE_OK {
-				log.Error().Interface("stat_response", statRes).Msg("error getting resource info")
-				continue
-			}
-
-			// If global URLs are not supported, return only the file path
-			if s.c.WebdavNamespace != "" {
-				// The paths we receive have the format /user/<username>/<filepath>
-				// We only want the `<filepath>` part. Thus we remove the /user/<username>/ part.
-				parts := strings.SplitN(statRes.Info.Path, "/", 4)
-				if len(parts) != 4 {
-					log.Error().Str("path", statRes.Info.Path).Msg("path doesn't have the expected format")
-					continue
-				}
-				statRes.Info.Path = parts[3]
-			}
+					if statRes.Status.Code != rpcv1beta1.Code_CODE_OK {  
+			log.Error().Interface("stat_response", statRes).Msg("error getting resource info")  
+			continue  
+		}  
+  
+		// If global URLs are not supported, return only the file path  
+		if s.c.WebdavNamespace != "" {  
+			// The paths we receive have the format /user/<username>/<filepath>  
+			// (EOS-style). Other drivers may return /<storage>/<filepath>.  
+			parts := strings.SplitN(statRes.Info.Path, "/", 4)  
+			switch {  
+			case len(parts) == 4:  
+				statRes.Info.Path = parts[3]  
+			case len(parts) == 3:  
+				// e.g. /localfs/pp.txt -> pp.txt  
+				statRes.Info.Path = parts[2]  
+			default:  
+				log.Error().Str("path", statRes.Info.Path).Msg("path doesn't have the expected format")  
+				continue  
+			}  
+		}
 
 			resourceInfos = append(resourceInfos, statRes.Info)
 		}
