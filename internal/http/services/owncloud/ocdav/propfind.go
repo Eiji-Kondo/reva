@@ -222,21 +222,23 @@ func (s *svc) getResourceInfos(ctx context.Context, w http.ResponseWriter, r *ht
 		return nil, nil, "", false
 	}
 
-	var metadataKeys []string
-
-	if pf.Allprop != nil {
-		// TODO this changes the behavior and returns all properties if allprops has been set,
-		// but allprops should only return some default properties
-		// see https://tools.ietf.org/html/rfc4918#section-9.1
-		// the description of arbitrary_metadata_keys in https://cs3org.github.io/cs3apis/#cs3.storage.provider.v1beta1.ListContainerRequest an others may need clarification
-		// tracked in https://github.com/cs3org/cs3apis/issues/104
-		metadataKeys = append(metadataKeys, "*")
-	} else {
-		for i := range pf.Prop {
-			if requiresExplicitFetching(&pf.Prop[i]) {
-				metadataKeys = append(metadataKeys, metadataKeyOf(&pf.Prop[i]))
-			}
-		}
+	var metadataKeys []string  
+  
+	if pf.Allprop != nil {  
+		metadataKeys = append(metadataKeys, "*")  
+	} else {  
+		for i := range pf.Prop {  
+			if requiresExplicitFetching(&pf.Prop[i]) {  
+				k := metadataKeyOf(&pf.Prop[i])  
+				// oc:favorite is stored under the per-user label key  
+				if pf.Prop[i].Space == _nsOwncloud && pf.Prop[i].Local == "favorite" {  
+					if u, ok := appctx.ContextGetUser(ctx); ok && u.Id != nil {  
+						k = fmt.Sprintf("reva.labels.%s.favorite", u.Id.OpaqueId)  
+					}  
+				}  
+				metadataKeys = append(metadataKeys, k)  
+			}  
+		}  
 	}
 	req := &provider.StatRequest{
 		Ref:                   ref,
