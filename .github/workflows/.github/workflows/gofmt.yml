@@ -1,1 +1,30 @@
-
+name: gofmt  
+  
+on:  
+  push:  
+    branches: [ "master" ]  
+  workflow_dispatch:  
+  
+permissions:  
+  contents: write   # bot が push するために必要  
+  
+jobs:  
+  gofmt:  
+    runs-on: ubuntu-latest  
+    steps:  
+      - name: Checkout  
+        uses: actions/checkout@v4  
+  
+      - name: Apply gofmt  
+        run: gofmt -w cmd internal pkg tools  
+  
+      - name: Commit and push if changed  
+        run: |  
+          if [ -n "$(git status --porcelain)" ]; then  
+            git config user.name "github-actions[bot]"  
+            git config user.email "github-actions[bot]@users.noreply.github.com"  
+            git commit -am "Apply gofmt"  
+            git push  
+          else  
+            echo "all files already formatted"  
+          fi
