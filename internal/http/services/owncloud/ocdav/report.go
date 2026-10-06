@@ -118,17 +118,11 @@ func (s *svc) doFilterFiles(w http.ResponseWriter, r *http.Request, ff *reportFi
 		// If global URLs are not supported, return only the file path  
 		if s.c.WebdavNamespace != "" {  
 			// The paths we receive have the format /user/<username>/<filepath>  
-			// (EOS-style). Other drivers may return /<storage>/<filepath>.  
-			parts := strings.SplitN(statRes.Info.Path, "/", 4)  
-			switch {  
-			case len(parts) == 4:  
+			// We only want the `<filepath>` part. Thus we remove the /user/<username>/ part.  
+			// Paths in other formats (e.g. /localfs/<filepath>) are left unchanged,  
+			// as they already resolve correctly relative to the space.  
+			if parts := strings.SplitN(statRes.Info.Path, "/", 4); len(parts) == 4 {  
 				statRes.Info.Path = parts[3]  
-			case len(parts) == 3:  
-				// e.g. /localfs/pp.txt -> pp.txt  
-				statRes.Info.Path = parts[2]  
-			default:  
-				log.Error().Str("path", statRes.Info.Path).Msg("path doesn't have the expected format")  
-				continue  
 			}  
 		}
 
