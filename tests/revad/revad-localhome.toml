@@ -79,7 +79,7 @@ expose_data_server = true
 
 [grpc.services.storageprovider.drivers.localhome]
 root = "./tmp/revalocalstorage"
-share_folder = "./tmp/revalocalstorage/shares"
+share_folder = "/MyShares"
 user_layout = "{{.Username}}"
 
 [grpc.services.authregistry]

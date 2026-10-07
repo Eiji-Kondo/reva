@@ -96,9 +96,17 @@ ldapsearch -x -H ldaps://localhost:636 \
   -D 'cn=admin,dc=owncloud,dc=com' -w admin \
   -b 'ou=users,dc=owncloud,dc=com' \
   '(&(objectClass=posixGroup)(memberUid=einstein))' cn gidNumber memberUid |
+  grep -q 'memberUid: marie'
+ldapsearch -x -H ldaps://localhost:636 \
+  -D 'cn=admin,dc=owncloud,dc=com' -w admin \
+  -b 'ou=users,dc=owncloud,dc=com' \
+  '(&(objectClass=posixGroup)(memberUid=marie))' cn gidNumber memberUid |
   grep -q 'cn: scientists'
+ldapwhoami -x -H ldaps://localhost:636 \
+  -D 'uid=marie,ou=users,dc=owncloud,dc=com' -w test-password
 
 go build -buildvcs=false -o ./cmd/revad/revad ./cmd/revad/main
+go build -buildvcs=false -o ./cmd/reva/reva ./cmd/reva
 ./cmd/revad/revad -t -c tests/revad/revad-localhome.toml
 mkdir -p tmp/revalocalstorage/shares
 ./cmd/revad/revad -c tests/revad/revad-localhome.toml >/tmp/revad.log 2>&1 &
@@ -142,7 +150,8 @@ expect_status 401 --user einstein:wrong-password \
 expect_status 207 --user einstein:test-password \
   -X PROPFIND -H 'Depth: 0' "$DAV_URL/"
 
-test_dir="$DAV_URL/ci-check-$$"
+test_id="$(date +%s%N)"
+test_dir="$DAV_URL/ci-check-$test_id"
 expect_status 201 --user einstein:test-password -X MKCOL "$test_dir"
 printf 'localhomefs test\n' >/tmp/localhome-test.txt
 expect_status 201 --user einstein:test-password \
@@ -151,6 +160,100 @@ expect_status 207 --user einstein:test-password \
   -X PROPFIND -H 'Depth: 1' "$test_dir/"
 expect_status 200 --user einstein:test-password "$test_dir/test.txt"
 cmp /tmp/localhome-test.txt /tmp/dav-response
+
+expect_status 200 --user einstein:test-password \
+  -X PROPPATCH -H 'Content-Type: application/xml; charset=utf-8' \
+  --data-binary @- "$test_dir/test.txt" <<'XML'
+<?xml version="1.0" encoding="utf-8"?>
+<d:propertyupdate xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+  <d:set><d:prop><oc:favorite>1</oc:favorite></d:prop></d:set>
+</d:propertyupdate>
+XML
+expect_status 207 --user einstein:test-password \
+  -X PROPFIND -H 'Depth: 0' \
+  -H 'Content-Type: application/xml; charset=utf-8' \
+  --data-binary @- "$test_dir/test.txt" <<'XML'
+<?xml version="1.0" encoding="utf-8"?>
+<d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+  <d:prop><oc:favorite/></d:prop>
+</d:propfind>
+XML
+grep -q '<oc:favorite>1</oc:favorite>' /tmp/dav-response
+expect_status 200 --user einstein:test-password \
+  -X PROPPATCH -H 'Content-Type: application/xml; charset=utf-8' \
+  --data-binary @- "$test_dir/test.txt" <<'XML'
+<?xml version="1.0" encoding="utf-8"?>
+<d:propertyupdate xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+  <d:remove><d:prop><oc:favorite/></d:prop></d:remove>
+</d:propertyupdate>
+XML
+expect_status 207 --user einstein:test-password \
+  -X PROPFIND -H 'Depth: 0' \
+  -H 'Content-Type: application/xml; charset=utf-8' \
+  --data-binary @- "$test_dir/test.txt" <<'XML'
+<?xml version="1.0" encoding="utf-8"?>
+<d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+  <d:prop><oc:favorite/></d:prop>
+</d:propfind>
+XML
+if grep -q '<oc:favorite>1</oc:favorite>' /tmp/dav-response; then
+  echo "PROPPATCH remove did not clear the favorite property" >&2
+  exit 1
+fi
+
+expect_status 201 --user einstein:test-password -X COPY \
+  -H "Destination: $DAV_URL/ci-copy-$test_id.txt" \
+  -H 'Overwrite: F' "$test_dir/test.txt"
+expect_status 201 --user einstein:test-password -X MOVE \
+  -H "Destination: $DAV_URL/ci-moved-$test_id.txt" \
+  -H 'Overwrite: F' "$DAV_URL/ci-copy-$test_id.txt"
+expect_status 200 --user einstein:test-password -I "$DAV_URL/ci-moved-$test_id.txt"
+expect_status 204 --user einstein:test-password -X DELETE "$DAV_URL/ci-moved-$test_id.txt"
+
+owner_token=/tmp/reva-token-einstein
+recipient_token=/tmp/reva-token-marie
+share_dir="share-ci-$test_id"
+./cmd/reva/reva -insecure -host=localhost:9142 -token-file="$owner_token" \
+  login --username=einstein --password=test-password basic
+./cmd/reva/reva -insecure -host=localhost:9142 -token-file="$recipient_token" \
+  login --username=marie --password=test-password basic
+./cmd/reva/reva -insecure -host=localhost:9142 -token-file="$owner_token" \
+  mkdir "/localfs/$share_dir"
+printf 'shared localhomefs content\n' >/tmp/shared-test.txt
+expect_status 201 --user einstein:test-password \
+  -T /tmp/shared-test.txt "$DAV_URL/$share_dir/shared.txt"
+
+./cmd/reva/reva -insecure -host=localhost:9142 -token-file="$owner_token" \
+  share-create -grantee=marie -role=viewer "/localfs/$share_dir/shared.txt" \
+  >/tmp/viewer-share.txt
+grep -q 'initiate_file_download:true' /tmp/viewer-share.txt
+if grep -q 'initiate_file_upload:true' /tmp/viewer-share.txt; then
+  echo "viewer share unexpectedly includes upload permission" >&2
+  exit 1
+fi
+received_shares=$(./cmd/reva/reva -insecure -host=localhost:9142 \
+  -token-file="$recipient_token" share-list-received)
+printf '%s\n' "$received_shares"
+received_share_id=$(printf '%s\n' "$received_shares" |
+  awk -F '|' '/GRANTEE_TYPE_USER/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit }')
+if [[ -z "$received_share_id" ]]; then
+  echo "Marie did not receive Einstein's viewer share" >&2
+  exit 1
+fi
+./cmd/reva/reva -insecure -host=localhost:9142 -token-file="$recipient_token" \
+  share-update-received -state=accepted "$received_share_id"
+./cmd/reva/reva -insecure -host=localhost:9142 -token-file="$owner_token" \
+  share-list | grep -q 'marie'
+printf 'editor permission test\n' >/tmp/editor-test.txt
+expect_status 201 --user einstein:test-password \
+  -T /tmp/editor-test.txt "$DAV_URL/$share_dir/editor.txt"
+./cmd/reva/reva -insecure -host=localhost:9142 -token-file="$owner_token" \
+  share-create -grantee=marie -role=editor "/localfs/$share_dir/editor.txt" \
+  >/tmp/editor-share.txt
+grep -q 'initiate_file_upload:true' /tmp/editor-share.txt
+grep -q 'create_container:true' /tmp/editor-share.txt
+./cmd/reva/reva -insecure -host=localhost:9142 -token-file="$recipient_token" \
+  share-list-received | grep -q 'marie'
 expect_status 204 --user einstein:test-password -X DELETE "$test_dir/"
 
-echo "ARMv7 Bookworm LDAP/LDAPS and localhomefs WebDAV tests passed"
+echo "ARMv7 Bookworm LDAP/LDAPS, WebDAV, PROPPATCH, and share permission tests passed"
