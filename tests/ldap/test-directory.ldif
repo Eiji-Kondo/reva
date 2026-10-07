@@ -1,0 +1,23 @@
+dn: ou=users,dc=owncloud,dc=com
+objectClass: organizationalUnit
+ou: users
+
+dn: uid=einstein,ou=users,dc=owncloud,dc=com
+objectClass: inetOrgPerson
+objectClass: posixAccount
+objectClass: shadowAccount
+uid: einstein
+cn: Albert Einstein
+sn: Einstein
+uidNumber: 10001
+gidNumber: 10001
+homeDirectory: /home/einstein
+loginShell: /bin/bash
+mail: einstein@example.org
+userPassword: @USER_PASSWORD_HASH@
+
+dn: cn=scientists,ou=users,dc=owncloud,dc=com
+objectClass: posixGroup
+cn: scientists
+gidNumber: 10001
+memberUid: einstein

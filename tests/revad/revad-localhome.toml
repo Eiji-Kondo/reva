@@ -1,0 +1,204 @@
+[log]
+level = "debug"
+
+[shared]
+gatewaysvc = "localhost:9142"
+jwt_secret = "top_secret_jwt_secret"
+skip_user_groups_in_token = true
+db_name = "test"
+db_engine = "sqlite"
+
+[grpc]
+address = "0.0.0.0:9142"
+
+[grpc.services.gateway]
+commit_share_to_storage_grant = true
+commit_share_to_storage_ref = true
+disable_home_creation_on_login = false
+transfer_shared_secret = "top_secret_transfer_shared_secret"
+transfer_expires = 86400
+home_mapping = ""
+home_layout = "/localfs/"
+etag_cache_ttl = 0
+create_home_cache_ttl = 1
+resource_info_cache_ttl = 60
+resource_info_cache_type = "memory"
+ocm_enabled = false
+authregistrysvc = "localhost:9142"
+storageregistrysvc = "localhost:9142"
+appregistrysvc = "localhost:9142"
+preferencessvc = "localhost:9142"
+userprovidersvc = "localhost:9142"
+groupprovidersvc = "localhost:9142"
+usershareprovidersvc = "localhost:9142"
+publicshareprovidersvc = "localhost:9142"
+spacessvc = "localhost:9142"
+datagateway = "http://localhost:38001/data"
+allowed_user_agents = { "/home" = ["grpc", "desktop"] }
+
+[grpc.services.gateway.token_managers.jwt]
+expires_next_weekend = true
+expires = 86400
+
+[grpc.services.preferences]
+driver = "sql"
+
+[grpc.services.preferences.drivers.sql]
+
+[grpc.services.spacesregistry]
+driver = "sql"
+user_space = "/localfs"
+machine_secret = "top_secret_machine_secret"
+resource_info_cache_ttl = 300
+resource_info_cache_type = "memory"
+
+[grpc.services.spacesregistry.drivers.sql]
+
+[grpc.services.spacesregistry.public_spaces.myPublicSpace]
+path = "/localfs/space_folder"
+description = "Public space for testing"
+
+[grpc.services.storageregistry]
+driver = "static"
+
+[grpc.services.storageregistry.drivers.static]
+home_provider = "/home"
+
+[grpc.services.storageregistry.drivers.static.rules]
+"/localfs" = { address = "localhost:9142" }
+"localfs" = { address = "localhost:9142" }
+
+[grpc.services.storageprovider]
+driver = "localhome"
+mount_path = "/localfs"
+mount_id = "localfs"
+space_depth = 1
+data_server_url = "http://localhost:38001/data"
+minimum_allowed_path_level_for_share = 0
+expose_data_server = true
+
+[grpc.services.storageprovider.drivers.localhome]
+root = "./tmp/revalocalstorage"
+share_folder = "./tmp/revalocalstorage/shares"
+user_layout = "{{.Username}}"
+
+[grpc.services.authregistry]
+driver = "static"
+
+[grpc.services.authregistry.drivers.static.rules]
+basic = "localhost:9142"
+bearer = "localhost:9142"
+publicshares = "localhost:9142"
+machine = "localhost:9143"
+
+[[grpc.services.authprovider]]
+auth_manager = "ldap"
+
+[grpc.services.authprovider.auth_managers.ldap]
+hostname = "localhost"
+port = 636
+insecure = false
+cacert = "/etc/ldap/certs/ldap.crt"
+base_dn = "ou=users,dc=owncloud,dc=com"
+loginfilter = "(uid={{login}})"
+idp = "http://localhost:20080"
+bind_username = "cn=admin,dc=owncloud,dc=com"
+bind_password = "admin"
+
+[grpc.services.authprovider.auth_managers.ldap.schema]
+dn = "dn"
+uid = "uid"
+cn = "cn"
+mail = "mail"
+displayName = "cn"
+uidNumber = "uidNumber"
+gidNumber = "gidNumber"
+
+[[grpc.services.authprovider]]
+auth_manager = "machine"
+address = "127.0.0.1:9143"
+
+[grpc.services.authprovider.auth_managers.machine]
+api_key = "top_secret_machine_secret"
+
+[grpc.services.userprovider]
+driver = "ldap"
+
+[grpc.services.userprovider.drivers.ldap]
+hostname = "localhost"
+port = 636
+insecure = false
+cacert = "/etc/ldap/certs/ldap.crt"
+bind_username = "cn=admin,dc=owncloud,dc=com"
+bind_password = "admin"
+base_dn = "ou=users,dc=owncloud,dc=com"
+userfilter = "(uid={{.OpaqueId}})"
+findfilter = "(|(cn={{query}}*)(mail={{query}}*))"
+groupfilter = "(&(objectclass=posixGroup)(memberUid={{.OpaqueId}}))"
+attributefilter = "({{attr}}={{value}})"
+
+[grpc.services.userprovider.drivers.ldap.schema]
+dn = "dn"
+uid = "uid"
+cn = "uid"
+mail = "mail"
+displayName = "cn"
+uidNumber = "uidNumber"
+gidNumber = "gidNumber"
+groupname = "cn"
+
+[grpc.services.groupprovider]
+driver = "ldap"
+
+[grpc.services.groupprovider.drivers.ldap]
+hostname = "localhost"
+port = 636
+insecure = false
+cacert = "/etc/ldap/certs/ldap.crt"
+bind_username = "cn=admin,dc=owncloud,dc=com"
+bind_password = "admin"
+base_dn = "ou=users,dc=owncloud,dc=com"
+nobody = 99
+idp = "http://localhost:20080"
+groupfilter = "(cn={{.OpaqueId}})"
+memberfilter = "(memberUid={{.OpaqueId}})"
+attributefilter = "({{attr}}={{value}})"
+findfilter = "(cn=*{{query}}*)"
+
+[grpc.services.groupprovider.drivers.ldap.schema]
+dn = "dn"
+gid = "cn"
+cn = "cn"
+username = "uid"
+mail = "mail"
+displayName = "cn"
+gidNumber = "gidNumber"
+
+[grpc.services.usershareprovider]
+driver = "sql"
+
+[grpc.services.usershareprovider.drivers.sql]
+
+[http]
+address = "0.0.0.0:38001"
+
+[http.services.dataprovider]
+driver = "localhome"
+
+[http.services.dataprovider.drivers.localhome]
+root = "./tmp/revalocalstorage"
+user_layout = "{{.Username}}"
+
+[http.services.ocdav]
+webdav_namespace = "/localfs"
+
+[http.services.ocs]
+gatewaysvc = "localhost:9142"
+home_namespace = "/localfs"
+
+[http.services.ocgraph]
+gatewaysvc = "localhost:9142"
+base_url = "http://127.0.0.1:38001"
+
+[grpc.services.labelsprovider]
+driver = "memory"

@@ -1,0 +1,30 @@
+name: Test localhomefs on ARMv7 Bookworm
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  localhome-armv7:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm
+
+      - name: Run LDAP, LDAPS, and localhomefs tests in Debian Bookworm ARMv7
+        run: |
+          docker run --rm --platform linux/arm/v7 \
+            -v "$PWD:/workspace" \
+            -w /workspace \
+            golang:1.25.8-bookworm \
+            bash tests/ldap/ci-armv7.sh
