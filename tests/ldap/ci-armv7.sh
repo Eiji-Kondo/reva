@@ -788,13 +788,24 @@ grep -q '^go_goroutines ' /tmp/dav-response || {
 }
 expect_status 404 --user einstein:test-password \
   "http://127.0.0.1:38001/unconfigured-$test_id"
-grep -F "uri=/unconfigured-$test_id" /tmp/revad.log |
-  grep -q 'status=404' || {
+# 404リクエストがアクセスログに記録されるまで待つ（最大30秒）
+# ログ行にはANSIカラーエスケープが混入するため、sedで除去してからgrepする
+found=0
+for ((i = 0; i < 60; i++)); do
+  clean=$(sed "s/\x1b\[[0-9;]*m//g" /tmp/revad.log 2>/dev/null || true)
+  hit=$(printf '%s\n' "$clean" | grep "unconfigured-$test_id" | grep "status=404" || true)
+  if [[ -n "$hit" ]]; then
+    found=1
+    break
+  fi
+  sleep 0.5
+done
+if [[ "$found" -ne 1 ]]; then
   echo "404 request was not recorded with its status in revad logs" >&2
   tail -80 /tmp/revad.log >&2
   exit 1
-}
-
+fi
+echo "404 access-log check OK"
 if (( SOAK_SECONDS > 0 )); then
   echo "Starting $SOAK_SECONDS-second WebDAV soak test"
   for ((elapsed = 0; elapsed < SOAK_SECONDS; elapsed++)); do
