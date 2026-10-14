@@ -71,6 +71,15 @@ func initializeDB(root, dbName string) (*sql.DB, error) {
 		return nil, errors.Wrap(err, "localfs: error executing create statement")
 	}
 
+	stmt, err = db.Prepare("CREATE TABLE IF NOT EXISTS resource_locks (resource TEXT NOT NULL, lock_id TEXT NOT NULL, lock_json TEXT NOT NULL, expires_at INTEGER NOT NULL, PRIMARY KEY (resource, lock_id))")
+	if err != nil {
+		return nil, errors.Wrap(err, "localfs: error preparing lock table statement")
+	}
+	_, err = stmt.Exec()
+	if err != nil {
+		return nil, errors.Wrap(err, "localfs: error creating lock table")
+	}
+
 	return db, nil
 }
 

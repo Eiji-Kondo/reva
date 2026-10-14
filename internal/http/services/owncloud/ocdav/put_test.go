@@ -29,6 +29,7 @@ import (
 	gateway "github.com/cs3org/go-cs3apis/cs3/gateway/v1beta1"
 	rpc "github.com/cs3org/go-cs3apis/cs3/rpc/v1beta1"
 	provider "github.com/cs3org/go-cs3apis/cs3/storage/provider/v1beta1"
+	typespb "github.com/cs3org/go-cs3apis/cs3/types/v1beta1"
 	mockgateway "github.com/cs3org/go-cs3apis/mocks/github.com/cs3org/go-cs3apis/cs3/gateway/v1beta1"
 	"github.com/cs3org/reva/v3/pkg/httpclient"
 	"github.com/cs3org/reva/v3/pkg/rgrpc/todo/pool"
@@ -39,20 +40,14 @@ import (
 // Test that when calls come in to the PUT endpoint with a X-Disable-Versioning header,
 // this header is propagated to the actual upload endpoint
 func TestDisableVersioningHeaderPassedAlong(t *testing.T) {
-
 	gatewayAPIEndpoint := "my-api-endpoint"
 	incomingPath := "http://my-reva.com/myfile.txt"
 	input := "Hello world!"
-
-	// create HTTP request
 	request := httptest.NewRequest(http.MethodPut, incomingPath, strings.NewReader(input))
 	request.Header.Add(HeaderContentLength, strconv.Itoa(len(input)))
 	request.Header.Add(HeaderDisableVersioning, "true")
 
-	// Create fake HTTP server for upload endpoint
-	// Here we will check whether the header was correctly set
 	calls := 0
-	w := httptest.NewRecorder()
 	mockServerUpload := httptest.NewServer(
 		http.HandlerFunc(
 			func(w http.ResponseWriter, r *http.Request) {
@@ -63,9 +58,9 @@ func TestDisableVersioningHeaderPassedAlong(t *testing.T) {
 			},
 		),
 	)
+	defer mockServerUpload.Close()
 	endpointPath := mockServerUpload.URL
 
-	// Set up mocked GatewayAPIClient
 	gatewayClient := mockgateway.NewMockGatewayAPIClient(t)
 	gatewayClient.On("Stat", mock.Anything, mock.Anything).Return(&provider.StatResponse{Status: &rpc.Status{Code: rpc.Code_CODE_NOT_FOUND}}, nil)
 	gatewayClient.On("InitiateFileUpload", mock.Anything, mock.Anything).Return(&gateway.InitiateFileUploadResponse{
@@ -75,7 +70,6 @@ func TestDisableVersioningHeaderPassedAlong(t *testing.T) {
 		}}, nil)
 	pool.RegisterGatewayServiceClient(gatewayClient, gatewayAPIEndpoint)
 
-	// Set up OCDAV Service
 	service := svc{
 		c: &Config{
 			GatewaySvc: gatewayAPIEndpoint,
@@ -83,12 +77,52 @@ func TestDisableVersioningHeaderPassedAlong(t *testing.T) {
 		client: httpclient.New(),
 	}
 	ref := provider.Reference{}
-
-	// Do the actual call
+	w := httptest.NewRecorder()
 	service.handlePut(context.Background(), w, request, &ref, zerolog.Logger{})
-
-	// If no connection was made to the upload endpoint, something is also wrong
 	if calls == 0 {
 		t.Errorf("Upload endpoint was not called. ")
+	}
+}
+
+func TestPutAllowsReferenceResources(t *testing.T) {
+	gatewayAPIEndpoint := "reference-api-endpoint"
+	calls := 0
+	mockServerUpload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+	}))
+	defer mockServerUpload.Close()
+
+	gatewayClient := mockgateway.NewMockGatewayAPIClient(t)
+	gatewayClient.On("Stat", mock.Anything, mock.Anything).Return(&provider.StatResponse{
+		Status: &rpc.Status{Code: rpc.Code_CODE_OK},
+		Info: &provider.ResourceInfo{
+			Type:  provider.ResourceType_RESOURCE_TYPE_REFERENCE,
+			Id:    &provider.ResourceId{StorageId: "localfs", OpaqueId: "fileid-marie%2Fshared.txt"},
+			Mtime: &typespb.Timestamp{},
+		},
+	}, nil)
+	gatewayClient.On("InitiateFileUpload", mock.Anything, mock.Anything).Return(&gateway.InitiateFileUploadResponse{
+		Status: &rpc.Status{Code: rpc.Code_CODE_OK},
+		Protocols: []*gateway.FileUploadProtocol{
+			{Protocol: "simple", UploadEndpoint: mockServerUpload.URL, Token: "my-secret-token"},
+		},
+	}, nil)
+	pool.RegisterGatewayServiceClient(gatewayClient, gatewayAPIEndpoint)
+
+	service := svc{
+		c:      &Config{GatewaySvc: gatewayAPIEndpoint},
+		client: httpclient.New(),
+	}
+	request := httptest.NewRequest(http.MethodPut, "http://my-reva.com/shared.txt", strings.NewReader("shared content"))
+	request.Header.Add(HeaderContentLength, strconv.Itoa(len("shared content")))
+	response := httptest.NewRecorder()
+
+	service.handlePut(context.Background(), response, request, &provider.Reference{}, zerolog.Logger{})
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("PUT response status = %d, want %d", response.Code, http.StatusNoContent)
+	}
+	if calls != 1 {
+		t.Fatalf("upload endpoint calls = %d, want 1", calls)
 	}
 }

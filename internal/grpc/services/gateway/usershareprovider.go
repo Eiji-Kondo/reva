@@ -590,14 +590,125 @@ func (s *svc) UpdateReceivedShare(ctx context.Context, req *collaboration.Update
 		}, nil
 	}
 
+	var previousState collaboration.ShareState
+	updateState := req.GetShare().GetState()
+	manageStorageReference := s.c.CommitShareToStorageRef &&
+		(updateState == collaboration.ShareState_SHARE_STATE_ACCEPTED ||
+			updateState == collaboration.ShareState_SHARE_STATE_REJECTED)
+	if manageStorageReference {
+		received, err := c.ListReceivedShares(ctx, &collaboration.ListReceivedSharesRequest{})
+		if err != nil {
+			return &collaboration.UpdateReceivedShareResponse{
+				Status: status.NewInternal(ctx, err, "error getting current received share state"),
+			}, nil
+		}
+		if received.Status == nil {
+			return &collaboration.UpdateReceivedShareResponse{
+				Status: status.NewInternal(ctx, errors.New("share provider returned no status"), "error getting current received share state"),
+			}, nil
+		}
+		if received.Status.Code != rpc.Code_CODE_OK {
+			return &collaboration.UpdateReceivedShareResponse{Status: received.Status}, nil
+		}
+
+		found := false
+		for _, share := range received.Shares {
+			if share.GetShare() == nil || share.GetShare().GetId() == nil {
+				continue
+			}
+			if share.GetShare().GetId().GetOpaqueId() == req.GetShare().GetShare().GetId().GetOpaqueId() {
+				previousState = share.GetState()
+				found = true
+				break
+			}
+		}
+		if !found {
+			return &collaboration.UpdateReceivedShareResponse{
+				Status: status.NewNotFound(ctx, "received share not found"),
+			}, nil
+		}
+	}
+
+	var rollbackStorageReference func() *rpc.Status
+	if s.c.CommitShareToStorageRef {
+		resourceID := req.GetShare().GetShare().GetResourceId()
+		if resourceID == nil {
+			return &collaboration.UpdateReceivedShareResponse{
+				Status: status.NewInvalidArg(ctx, "share resource id missing"),
+			}, nil
+		}
+
+		if updateState == collaboration.ShareState_SHARE_STATE_REJECTED &&
+			previousState == collaboration.ShareState_SHARE_STATE_ACCEPTED {
+			if refStatus := s.removeReference(ctx, resourceID); refStatus.Code != rpc.Code_CODE_OK {
+				return &collaboration.UpdateReceivedShareResponse{Status: refStatus}, nil
+			}
+			rollbackStorageReference = func() *rpc.Status {
+				return s.createReference(ctx, resourceID)
+			}
+		}
+	}
+
 	res, err := c.UpdateReceivedShare(ctx, req)
 	if err != nil {
 		log.Err(err).Msg("gateway: error calling UpdateReceivedShare")
+		if rollbackStorageReference != nil {
+			if rollbackStatus := rollbackStorageReference(); rollbackStatus.Code != rpc.Code_CODE_OK {
+				log.Error().
+					Str("share_id", req.GetShare().GetShare().GetId().GetOpaqueId()).
+					Str("rollback_status", rollbackStatus.String()).
+					Msg("failed to roll back storage reference after share update error")
+			}
+		}
 		return &collaboration.UpdateReceivedShareResponse{
 			Status: &rpc.Status{
 				Code: rpc.Code_CODE_INTERNAL,
 			},
 		}, nil
+	}
+	if res == nil || res.Status == nil {
+		if rollbackStorageReference != nil {
+			if rollbackStatus := rollbackStorageReference(); rollbackStatus.Code != rpc.Code_CODE_OK {
+				log.Error().
+					Str("share_id", req.GetShare().GetShare().GetId().GetOpaqueId()).
+					Str("rollback_status", rollbackStatus.String()).
+					Msg("failed to roll back storage reference after invalid share update response")
+			}
+		}
+		return &collaboration.UpdateReceivedShareResponse{
+			Status: status.NewInternal(ctx, errors.New("share provider returned no status"), "invalid response updating received share"),
+		}, nil
+	}
+	if res.Status.Code != rpc.Code_CODE_OK && rollbackStorageReference != nil {
+		if rollbackStatus := rollbackStorageReference(); rollbackStatus.Code != rpc.Code_CODE_OK {
+			log.Error().
+				Str("share_id", req.GetShare().GetShare().GetId().GetOpaqueId()).
+				Str("rollback_status", rollbackStatus.String()).
+				Msg("failed to roll back storage reference after share update rejection")
+		}
+	}
+	if res.Status != nil && res.Status.Code == rpc.Code_CODE_OK &&
+		updateState == collaboration.ShareState_SHARE_STATE_ACCEPTED && manageStorageReference {
+		resourceID := req.GetShare().GetShare().GetResourceId()
+		refStatus := s.createReference(ctx, resourceID)
+		if refStatus.Code != rpc.Code_CODE_OK {
+			rollbackReq := *req
+			rollbackShare := *req.GetShare()
+			rollbackShare.State = previousState
+			rollbackReq.Share = &rollbackShare
+			rollbackRes, rollbackErr := c.UpdateReceivedShare(ctx, &rollbackReq)
+			if rollbackErr != nil {
+				log.Err(rollbackErr).
+					Str("share_id", req.GetShare().GetShare().GetId().GetOpaqueId()).
+					Msg("failed to roll back share state after storage reference creation failure")
+			} else if rollbackRes == nil || rollbackRes.Status == nil ||
+				rollbackRes.Status.Code != rpc.Code_CODE_OK {
+				log.Error().
+					Str("share_id", req.GetShare().GetShare().GetId().GetOpaqueId()).
+					Msg("share state rollback returned a failure status after storage reference creation failure")
+			}
+			return &collaboration.UpdateReceivedShareResponse{Status: refStatus}, nil
+		}
 	}
 
 	return res, nil

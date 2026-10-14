@@ -91,7 +91,7 @@ func (c *Config) ApplyDefaults() {
 	c.References = path.Join(c.Shadow, "references")
 	c.RecycleBin = path.Join(c.Shadow, "recycle_bin")
 	c.Versions = path.Join(c.Shadow, "versions")
-	
+
 }
 
 type localfs struct {
@@ -147,7 +147,11 @@ func (fs *localfs) resolve(ctx context.Context, ref *provider.Reference) (p stri
 	}
 
 	if ref.Path != "" {
-		return path.Join("/", ref.Path), nil
+		p = path.Join("/", ref.Path)
+		if p == foreignResourcePathPrefix || strings.HasPrefix(p, foreignResourcePathPrefix+"/") {
+			return "", errtypes.PermissionDenied("localfs: foreign resource paths require an authorized resource id")
+		}
+		return p, nil
 	}
 
 	// reference is invalid
@@ -181,6 +185,9 @@ func (fs *localfs) wrap(ctx context.Context, p string) string {
 	// Normalize and secure: path.Join("/", p) collapses ".." and "." and produces
 	// a single leading slash so stripVirtualHomePrefix and later logic see a stable form.
 	p = path.Join("/", p)
+	if strings.HasPrefix(p, foreignResourcePathPrefix+"/") {
+		return path.Join(fs.conf.DataDirectory, strings.TrimPrefix(p, foreignResourcePathPrefix+"/"))
+	}
 
 	// Strip virtual home prefix to map virtual namespace to flat per-user storage.
 	// Example: /home/einstein/file.txt -> /file.txt (stored as data/einstein/file.txt)
@@ -365,21 +372,20 @@ func (fs *localfs) isShareFolderChild(ctx context.Context, p string) bool {
 }
 
 // permissionSet returns the permission set for the current user.
-func (fs *localfs) permissionSet(ctx context.Context, owner *userpb.UserId) *provider.ResourcePermissions {
+func (fs *localfs) permissionSet(ctx context.Context, owner *userpb.UserId, resourcePath string) (*provider.ResourcePermissions, error) {
 	u, ok := appctx.ContextGetUser(ctx)
 	if !ok {
-		return &provider.ResourcePermissions{
-			// no permissions
-		}
+		return &provider.ResourcePermissions{}, nil
 	}
 	if u.Id == nil {
-		return &provider.ResourcePermissions{
-			// no permissions
-		}
+		return &provider.ResourcePermissions{}, nil
 	}
-	if u.Id.OpaqueId == owner.OpaqueId && u.Id.Idp == owner.Idp {
+	isForeign, err := fs.isForeignDataPath(ctx, resourcePath)
+	if err != nil {
+		return nil, err
+	}
+	if !isForeign && u.Id.OpaqueId == owner.OpaqueId && u.Id.Idp == owner.Idp {
 		return &provider.ResourcePermissions{
-			// owner has all permissions
 			AddGrant:             true,
 			CreateContainer:      true,
 			Delete:               true,
@@ -398,34 +404,23 @@ func (fs *localfs) permissionSet(ctx context.Context, owner *userpb.UserId) *pro
 			RestoreRecycleItem:   true,
 			Stat:                 true,
 			UpdateGrant:          true,
-		}
+		}, nil
 	}
-	// TODO fix permissions for share recipients by traversing reading acls up to the root? cache acls for the parent node and reuse it
-	return &provider.ResourcePermissions{
-		AddGrant:             true,
-		CreateContainer:      true,
-		Delete:               true,
-		GetPath:              true,
-		GetQuota:             true,
-		InitiateFileDownload: true,
-		InitiateFileUpload:   true,
-		ListContainer:        true,
-		ListFileVersions:     true,
-		ListGrants:           true,
-		ListRecycle:          true,
-		Move:                 true,
-		PurgeRecycle:         true,
-		RemoveGrant:          true,
-		RestoreFileVersion:   true,
-		RestoreRecycleItem:   true,
-		Stat:                 true,
-		UpdateGrant:          true,
-	}
+	return fs.grantedPermissions(ctx, resourcePath)
 }
 
 func (fs *localfs) normalize(ctx context.Context, fi os.FileInfo, fn string, mdKeys []string) (*provider.ResourceInfo, error) {
 	log := appctx.GetLogger(ctx)
 	fp := fs.unwrap(ctx, fn)
+	isForeign, err := fs.isForeignDataPath(ctx, fn)
+	if err != nil {
+		return nil, err
+	}
+	foreignResourcePath := ""
+	if isForeign {
+		foreignResourcePath = strings.TrimPrefix(path.Clean(fn), path.Clean(fs.conf.DataDirectory)+"/")
+		fp = "/" + foreignResourcePath
+	}
 	owner, err := getUser(ctx)
 	if err != nil {
 		return nil, err
@@ -445,13 +440,23 @@ func (fs *localfs) normalize(ctx context.Context, fi os.FileInfo, fn string, mdK
 
 	// A fileid is constructed like `fileid-url_encoded_path`. See GetPathByID for the inverse conversion
 	// OpaqueId uses storage-relative path (e.g., einstein/Test.txt)
-	opaqueID := "fileid-" + url.QueryEscape(path.Join(layout, fp))
+	opaquePath := path.Join(layout, fp)
+	if isForeign {
+		opaquePath = foreignResourcePath
+	}
+	opaqueID := "fileid-" + url.QueryEscape(opaquePath)
 
 	// Path field needs virtual home prefix for space-based routing (PathToSpaceID)
 	virtualPath := fp
-	virtualHome, vhErr := fs.getVirtualHome(ctx)
-	if vhErr == nil && virtualHome != "" {
-		virtualPath = path.Join(virtualHome, fp)
+	var virtualHome string
+	if isForeign {
+		virtualPath = path.Join(foreignResourcePathPrefix, foreignResourcePath)
+	} else {
+		var vhErr error
+		virtualHome, vhErr = fs.getVirtualHome(ctx)
+		if vhErr == nil && virtualHome != "" {
+			virtualPath = path.Join(virtualHome, fp)
+		}
 	}
 
 	log.Debug().
@@ -461,6 +466,11 @@ func (fs *localfs) normalize(ctx context.Context, fi os.FileInfo, fn string, mdK
 		Str("opaque_id", opaqueID).
 		Msg("localfs: normalize paths")
 
+	permissions, err := fs.permissionSet(ctx, owner.Id, fn)
+	if err != nil {
+		return nil, errors.Wrap(err, "localfs: error resolving resource permissions")
+	}
+
 	md := &provider.ResourceInfo{
 		Id:            &provider.ResourceId{OpaqueId: opaqueID},
 		Path:          virtualPath,
@@ -468,7 +478,7 @@ func (fs *localfs) normalize(ctx context.Context, fi os.FileInfo, fn string, mdK
 		Etag:          calcEtag(ctx, fi),
 		MimeType:      mime.Detect(fi.IsDir(), virtualPath),
 		Size:          uint64(fi.Size()),
-		PermissionSet: fs.permissionSet(ctx, owner.Id),
+		PermissionSet: permissions,
 		Mtime: &types.Timestamp{
 			Seconds: uint64(fi.ModTime().Unix()),
 		},
@@ -490,6 +500,26 @@ func (fs *localfs) convertToFileReference(ctx context.Context, fi os.FileInfo, f
 		return nil, err
 	}
 	info.Target = target
+
+	sharePath := fs.unwrap(ctx, fn)
+	foreignPath, err := fs.resolveShareReference(ctx, sharePath, false)
+	if err != nil {
+		return nil, err
+	}
+	targetPath := fs.wrap(ctx, foreignPath)
+	targetInfo, err := os.Stat(targetPath)
+	if err != nil {
+		return nil, errors.Wrap(err, "localfs: error stating share reference target")
+	}
+	info.Size = uint64(targetInfo.Size())
+	info.Etag = calcEtag(ctx, targetInfo)
+	info.MimeType = mime.Detect(targetInfo.IsDir(), info.Path)
+	info.Mtime = &types.Timestamp{Seconds: uint64(targetInfo.ModTime().Unix())}
+	permissions, err := fs.inheritedGrantedPermissions(ctx, targetPath)
+	if err != nil {
+		return nil, err
+	}
+	info.PermissionSet = permissions
 	return info, nil
 }
 
@@ -535,15 +565,7 @@ func (fs *localfs) retrieveArbitraryMetadata(ctx context.Context, fn string, mdK
 // GetPathByID returns the path pointed by the file id
 // In this implementation the file id is in the form `fileid-url_encoded_path`.
 func (fs *localfs) GetPathByID(ctx context.Context, ref *provider.ResourceId) (string, error) {
-	var layout string
-	if !fs.conf.DisableHome {
-		var err error
-		layout, err = fs.GetHome(ctx)
-		if err != nil {
-			return "", err
-		}
-	}
-	return url.QueryUnescape(strings.TrimPrefix(ref.OpaqueId, "fileid-"+layout))
+	return fs.sharedResourcePath(ctx, ref)
 }
 
 func (fs *localfs) DenyGrant(ctx context.Context, ref *provider.Reference, g *provider.Grantee) error {
@@ -817,26 +839,6 @@ func (fs *localfs) UnsetArbitraryMetadata(ctx context.Context, ref *provider.Ref
 	}
 
 	return fs.propagate(ctx, np)
-}
-
-// GetLock returns an existing lock on the given reference.
-func (fs *localfs) GetLock(ctx context.Context, ref *provider.Reference) (*provider.Lock, error) {
-	return nil, errtypes.NotSupported("unimplemented")
-}
-
-// SetLock puts a lock on the given reference.
-func (fs *localfs) SetLock(ctx context.Context, ref *provider.Reference, lock *provider.Lock) error {
-	return errtypes.NotSupported("unimplemented")
-}
-
-// RefreshLock refreshes an existing lock on the given reference.
-func (fs *localfs) RefreshLock(ctx context.Context, ref *provider.Reference, lock *provider.Lock, existingLockID string) error {
-	return errtypes.NotSupported("unimplemented")
-}
-
-// Unlock removes an existing lock from the given reference.
-func (fs *localfs) Unlock(ctx context.Context, ref *provider.Reference, lock *provider.Lock) error {
-	return errtypes.NotSupported("unimplemented")
 }
 
 func (fs *localfs) GetHome(ctx context.Context) (string, error) {
@@ -1226,8 +1228,14 @@ func (fs *localfs) Download(ctx context.Context, ref *provider.Reference, ranges
 		return nil, errors.Wrap(err, "localfs: error resolving ref")
 	}
 
-	if fs.isShareFolder(ctx, fn) {
-		return nil, errtypes.PermissionDenied("localfs: cannot download under the virtual share folder")
+	if fs.isShareFolderRoot(ctx, fn) {
+		return nil, errtypes.PermissionDenied("localfs: cannot download the virtual share folder")
+	}
+	if fs.isShareFolderChild(ctx, fn) {
+		fn, err = fs.resolveShareReference(ctx, fn, false)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	fn = fs.wrap(ctx, fn)
@@ -1257,51 +1265,51 @@ func (fs *localfs) archiveRevision(ctx context.Context, np string) error {
 	return nil
 }
 
-func (fs *localfs) ListRevisions(ctx context.Context, ref *provider.Reference) ([]*provider.FileVersion, error) {  
-	np, err := fs.resolve(ctx, ref)  
-	if err != nil {  
-		return nil, errors.Wrap(err, "localfs: error resolving ref")  
+func (fs *localfs) ListRevisions(ctx context.Context, ref *provider.Reference) ([]*provider.FileVersion, error) {
+	np, err := fs.resolve(ctx, ref)
+	if err != nil {
+		return nil, errors.Wrap(err, "localfs: error resolving ref")
 	}
-  
-	if fs.isShareFolder(ctx, np) {  
-		return nil, errtypes.PermissionDenied("localfs: cannot list revisions under the virtual share folder")  
-	}  
-  
-	versionsDir := fs.wrapVersions(ctx, np)  
-	revisions := []*provider.FileVersion{}  
-	entries, err := os.ReadDir(versionsDir)  
-	if err != nil {  
-		if os.IsNotExist(err) {  
-			// Versions directory doesn't exist yet, return empty list  
-			return revisions, nil  
-		}  
-		return nil, errors.Wrap(err, "localfs: error reading"+versionsDir)  
-	}  
-	mds := make([]iofs.FileInfo, 0, len(entries))  
-	for _, entry := range entries {  
-		info, err := entry.Info()  
-		if err != nil {  
-			return nil, err  
-		}  
-		mds = append(mds, info)  
-	}  
-  
-	for i := range mds {  
-		// versions resemble v12345678  
-		version := mds[i].Name()[1:]  
-  
+
+	if fs.isShareFolder(ctx, np) {
+		return nil, errtypes.PermissionDenied("localfs: cannot list revisions under the virtual share folder")
+	}
+
+	versionsDir := fs.wrapVersions(ctx, np)
+	revisions := []*provider.FileVersion{}
+	entries, err := os.ReadDir(versionsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Versions directory doesn't exist yet, return empty list
+			return revisions, nil
+		}
+		return nil, errors.Wrap(err, "localfs: error reading"+versionsDir)
+	}
+	mds := make([]iofs.FileInfo, 0, len(entries))
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			return nil, err
+		}
+		mds = append(mds, info)
+	}
+
+	for i := range mds {
+		// versions resemble v12345678
+		version := mds[i].Name()[1:]
+
 		mtime, err := strconv.ParseInt(version, 10, 64)
-		if err != nil {  
-			continue  
-		}  
-		revisions = append(revisions, &provider.FileVersion{  
-			Key:   version,  
-			Size:  uint64(mds[i].Size()),  
+		if err != nil {
+			continue
+		}
+		revisions = append(revisions, &provider.FileVersion{
+			Key:   version,
+			Size:  uint64(mds[i].Size()),
 			Mtime: uint64(mtime / 1000),
-			Etag:  calcEtag(ctx, mds[i]),  
-		})  
-	}  
-	return revisions, nil  
+			Etag:  calcEtag(ctx, mds[i]),
+		})
+	}
+	return revisions, nil
 }
 
 func (fs *localfs) DownloadRevision(ctx context.Context, ref *provider.Reference, revisionKey string) (io.ReadCloser, error) {
@@ -1406,10 +1414,10 @@ func (fs *localfs) convertToRecycleItem(ctx context.Context, rp string, md os.Fi
 	}
 
 	return &provider.RecycleItem{
-		Type: getResourceType(md.IsDir()),
-		Key:  md.Name(),
-		Ref:  &provider.Reference{Path: filePath},
-		Size: uint64(md.Size()),
+		Type:         getResourceType(md.IsDir()),
+		Key:          md.Name(),
+		Ref:          &provider.Reference{Path: filePath},
+		Size:         uint64(md.Size()),
 		DeletionTime: msToTimestamp(ttime),
 	}
 }

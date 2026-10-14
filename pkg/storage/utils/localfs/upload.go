@@ -93,6 +93,12 @@ func (fs *localfs) InitiateUpload(ctx context.Context, ref *provider.Reference, 
 	if err != nil {
 		return nil, errors.Wrap(err, "localfs: error resolving reference")
 	}
+	if fs.isShareFolderChild(ctx, np) {
+		np, err = fs.resolveShareReference(ctx, np, true)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	info := tusd.FileInfo{
 		MetaData: tusd.MetaData{

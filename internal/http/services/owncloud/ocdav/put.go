@@ -170,7 +170,8 @@ func (s *svc) handlePut(ctx context.Context, w http.ResponseWriter, r *http.Requ
 
 	info := sRes.Info
 	if info != nil {
-		if info.Type != provider.ResourceType_RESOURCE_TYPE_FILE {
+		if info.Type != provider.ResourceType_RESOURCE_TYPE_FILE &&
+			info.Type != provider.ResourceType_RESOURCE_TYPE_REFERENCE {
 			log.Debug().Msg("resource is not a file")
 			w.WriteHeader(http.StatusConflict)
 			return
@@ -289,7 +290,11 @@ func (s *svc) handlePut(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		return
 	}
 	httpReq.Header.Set(datagateway.TokenTransportHeader, token)
-	if lockid := r.Header.Get(HeaderLockID); lockid != "" {
+	lockid := r.Header.Get(HeaderLockID)
+	if tokens := lockTokens(r.Header.Get("If")); len(tokens) == 1 {
+		lockid = tokens[0]
+	}
+	if lockid != "" {
 		httpReq.Header.Set(HeaderLockID, lockid)
 	}
 	if lockholder := r.Header.Get(HeaderLockHolder); lockholder != "" {

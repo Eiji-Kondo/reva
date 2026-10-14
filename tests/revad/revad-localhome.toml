@@ -129,6 +129,7 @@ hostname = "localhost"
 port = 636
 insecure = false
 cacert = "/etc/ldap/certs/ldap.crt"
+idp = "http://localhost:20080"
 bind_username = "cn=admin,dc=owncloud,dc=com"
 bind_password = "admin"
 base_dn = "ou=users,dc=owncloud,dc=com"
@@ -199,6 +200,9 @@ home_namespace = "/localfs"
 [http.services.ocgraph]
 gatewaysvc = "localhost:9142"
 base_url = "http://127.0.0.1:38001"
+
+[http.services.prometheus]
+prefix = "metrics"
 
 [grpc.services.labelsprovider]
 driver = "memory"

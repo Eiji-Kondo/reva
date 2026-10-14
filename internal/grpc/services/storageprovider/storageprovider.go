@@ -313,6 +313,8 @@ func (s *service) SetLock(ctx context.Context, req *provider.SetLockRequest) (*p
 			st = status.NewPermissionDenied(ctx, err, "permission denied")
 		case errtypes.Conflict:
 			st = status.NewFailedPrecondition(ctx, err, "reference already locked")
+		case errtypes.NotSupported:
+			st = status.NewUnimplemented(ctx, err, "locking is not supported for this resource")
 		default:
 			st = status.NewInternal(ctx, err, "error setting lock: "+req.Ref.String())
 		}
@@ -345,6 +347,8 @@ func (s *service) GetLock(ctx context.Context, req *provider.GetLockRequest) (*p
 			st = status.NewNotFound(ctx, "reference or lock not found")
 		case errtypes.PermissionDenied:
 			st = status.NewPermissionDenied(ctx, err, "permission denied")
+		case errtypes.NotSupported:
+			st = status.NewUnimplemented(ctx, err, "locking is not supported for this resource")
 		default:
 			st = status.NewInternal(ctx, err, "error getting lock: "+req.Ref.String())
 		}
@@ -379,6 +383,8 @@ func (s *service) RefreshLock(ctx context.Context, req *provider.RefreshLockRequ
 			st = status.NewPermissionDenied(ctx, err, "permission denied")
 		case errtypes.BadRequest:
 			st = status.NewFailedPrecondition(ctx, err, "reference not locked or caller does not hold the lock")
+		case errtypes.NotSupported:
+			st = status.NewUnimplemented(ctx, err, "locking is not supported for this resource")
 		default:
 			st = status.NewInternal(ctx, err, "error refreshing lock: "+req.Ref.String())
 		}
@@ -412,6 +418,8 @@ func (s *service) Unlock(ctx context.Context, req *provider.UnlockRequest) (*pro
 			st = status.NewPermissionDenied(ctx, err, "permission denied")
 		case errtypes.BadRequest:
 			st = status.NewFailedPrecondition(ctx, err, "reference not locked")
+		case errtypes.NotSupported:
+			st = status.NewUnimplemented(ctx, err, "locking is not supported for this resource")
 		default:
 			st = status.NewInternal(ctx, err, "error unlocking: "+req.Ref.String())
 		}
@@ -460,14 +468,14 @@ func (s *service) InitiateFileDownload(ctx context.Context, req *provider.Initia
 				}
 			}
 		}
-			u.Path = path.Join(u.Path, "simple", downloadPath)  
-				if req.Opaque != nil && req.Opaque.Map != nil {
-				if vk := req.Opaque.Map["version_key"]; vk != nil {
-					q := u.Query()
-					q.Set("version_key", string(vk.Value)) 
-					u.RawQuery = q.Encode()  
-			}  
-		}  
+		u.Path = path.Join(u.Path, "simple", downloadPath)
+		if req.Opaque != nil && req.Opaque.Map != nil {
+			if vk := req.Opaque.Map["version_key"]; vk != nil {
+				q := u.Query()
+				q.Set("version_key", string(vk.Value))
+				u.RawQuery = q.Encode()
+			}
+		}
 	}
 
 	protocol.DownloadEndpoint = u.String()
@@ -1372,42 +1380,42 @@ func (s *service) ListRecycle(ctx context.Context, req *provider.ListRecycleRequ
 	return res, nil
 }
 
-func (s *service) RestoreRecycleItem(ctx context.Context, req *provider.RestoreRecycleItemRequest) (*provider.RestoreRecycleItemResponse, error) {  
-	ref, err := s.unwrap(ctx, req.Ref)  
-	if err != nil {  
-		return nil, err  
-	}  
-  
-	restoreRef := req.RestoreRef  
-	if restoreRef != nil {  
-		restoreRef, err = s.unwrap(ctx, restoreRef)  
-		if err != nil {  
-			return &provider.RestoreRecycleItemResponse{  
-				Status: status.NewInternal(ctx, err, "error unwrapping restore ref"),  
-			}, nil  
-		}  
-	}  
-  
-	key, itemPath := router.ShiftPath(req.Key)  
-	if err := s.storage.RestoreRecycleItem(ctx, ref.GetPath(), key, itemPath, restoreRef); err != nil {  
-		var st *rpc.Status  
-		switch err.(type) {  
-		case errtypes.IsNotFound:  
-			st = status.NewNotFound(ctx, "path not found when restoring recycle bin item")  
-		case errtypes.PermissionDenied:  
-			st = status.NewPermissionDenied(ctx, err, "permission denied")  
-		default:  
-			st = status.NewInternal(ctx, err, "error restoring recycle bin item")  
-		}  
-		return &provider.RestoreRecycleItemResponse{  
-			Status: st,  
-		}, nil  
-	}  
-  
-	res := &provider.RestoreRecycleItemResponse{  
-		Status: status.NewOK(ctx),  
-	}  
-	return res, nil  
+func (s *service) RestoreRecycleItem(ctx context.Context, req *provider.RestoreRecycleItemRequest) (*provider.RestoreRecycleItemResponse, error) {
+	ref, err := s.unwrap(ctx, req.Ref)
+	if err != nil {
+		return nil, err
+	}
+
+	restoreRef := req.RestoreRef
+	if restoreRef != nil {
+		restoreRef, err = s.unwrap(ctx, restoreRef)
+		if err != nil {
+			return &provider.RestoreRecycleItemResponse{
+				Status: status.NewInternal(ctx, err, "error unwrapping restore ref"),
+			}, nil
+		}
+	}
+
+	key, itemPath := router.ShiftPath(req.Key)
+	if err := s.storage.RestoreRecycleItem(ctx, ref.GetPath(), key, itemPath, restoreRef); err != nil {
+		var st *rpc.Status
+		switch err.(type) {
+		case errtypes.IsNotFound:
+			st = status.NewNotFound(ctx, "path not found when restoring recycle bin item")
+		case errtypes.PermissionDenied:
+			st = status.NewPermissionDenied(ctx, err, "permission denied")
+		default:
+			st = status.NewInternal(ctx, err, "error restoring recycle bin item")
+		}
+		return &provider.RestoreRecycleItemResponse{
+			Status: st,
+		}, nil
+	}
+
+	res := &provider.RestoreRecycleItemResponse{
+		Status: status.NewOK(ctx),
+	}
+	return res, nil
 }
 
 func (s *service) PurgeRecycle(ctx context.Context, req *provider.PurgeRecycleRequest) (*provider.PurgeRecycleResponse, error) {
