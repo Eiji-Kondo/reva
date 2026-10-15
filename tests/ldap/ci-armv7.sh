@@ -764,6 +764,15 @@ expect_status 200 --user einstein:test-password \
 expect_status 204 --user einstein:test-password -X UNLOCK \
   -H "Lock-Token: <$persistent_lock_token>" "$editor_owner_path"
 
+# malformed LOCK XML must not crash revad  
+badlock_status=$(curl -sS -o /tmp/badlock-response -w '%{http_code}' --max-time 10 --user einstein:test-password -X LOCK -H 'Content-Type: application/xml' --data-binary '<D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/>' "$DAV_URL/malformed-lock-$test_id.txt" || echo 000)  
+echo "malformed LOCK returned HTTP $badlock_status"  
+[[ "$badlock_status" =~ ^4[0-9][0-9]$ ]] || {  
+  echo "malformed LOCK XML returned unexpected HTTP $badlock_status" >&2  
+  exit 1  
+}  
+kill -0 "$revad_pid" || { echo "revad crashed on malformed LOCK XML" >&2; exit 1; }  
+  
 sed 's|loginfilter = "(uid={{login}})"|loginfilter = "(uid=disabled-{{login}})"|' \
   "$runtime_config" >/tmp/revad-config-changed.toml
 grep -q 'loginfilter = "(uid=disabled-{{login}})"' /tmp/revad-config-changed.toml || {
