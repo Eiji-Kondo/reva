@@ -764,15 +764,42 @@ expect_status 200 --user einstein:test-password \
 expect_status 204 --user einstein:test-password -X UNLOCK \
   -H "Lock-Token: <$persistent_lock_token>" "$editor_owner_path"
 
-# malformed LOCK XML must not crash revad  
-badlock_status=$(curl -sS -o /tmp/badlock-response -w '%{http_code}' --max-time 10 --user einstein:test-password -X LOCK -H 'Content-Type: application/xml' --data-binary '<D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/>' "$DAV_URL/malformed-lock-$test_id.txt" || echo 000)  
-echo "malformed LOCK returned HTTP $badlock_status"  
-[[ "$badlock_status" =~ ^4[0-9][0-9]$ ]] || {  
-  echo "malformed LOCK XML returned unexpected HTTP $badlock_status" >&2  
-  exit 1  
-}  
-kill -0 "$revad_pid" || { echo "revad crashed on malformed LOCK XML" >&2; exit 1; }  
-  
+# --- PUT途中失敗の回復テスト ---
+dd if=/dev/urandom of=/tmp/put-partial-src.bin bs=1M count=4 2>/dev/null
+curl -sS -o /dev/null --max-time 0.3 --user einstein:test-password -T /tmp/put-partial-src.bin "$DAV_URL/put-partial.bin" 2>/dev/null || true
+# 中断後、同パスに再PUTして復旧できることを確認
+reput_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 --user einstein:test-password -T /tmp/put-partial-src.bin "$DAV_URL/put-partial.bin")
+[[ "$reput_status" == 201 || "$reput_status" == 204 ]] || { echo "re-PUT after interruption returned HTTP $reput_status" >&2; exit 1; }
+expect_status 200 --user einstein:test-password "$DAV_URL/put-partial.bin"
+expect_status 204 --user einstein:test-password -X DELETE "$DAV_URL/put-partial.bin"
+echo "PUT interruption recovery OK"
+# --- 認証失敗連続時の健全性 ---
+for n in 1 2 3 4 5; do
+  bad_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 --user einstein:wrong-password "$DAV_URL/" || true)
+done
+expect_status 207 --user einstein:test-password -X PROPFIND -H 'Depth: 0' "$DAV_URL/"
+echo "repeated auth failure resilience OK"
+# --- 大量ファイル列挙負荷 ---
+LISTING_FILES="${LISTING_FILES:-100}"
+[[ "$LISTING_FILES" =~ ^[0-9]+$ ]] || LISTING_FILES=100
+expect_status 201 --user einstein:test-password -X MKCOL "$DAV_URL/bulk-list"
+for n in $(seq 1 "$LISTING_FILES"); do
+  curl -sS -o /dev/null --max-time 10 --user einstein:test-password -T /tmp/put-partial-src.bin "$DAV_URL/bulk-list/file-$n.txt" >/dev/null 2>&1 || true
+done
+list_status=$(curl -sS -o /tmp/bulk-list-response -w '%{http_code}' --max-time 60 --user einstein:test-password -X PROPFIND -H 'Depth: 1' "$DAV_URL/bulk-list/" || true)
+[[ "$list_status" == 207 ]] || { echo "bulk listing returned HTTP $list_status, expected 207" >&2; exit 1; }
+kill -0 "$revad_pid" || { echo "revad crashed during bulk listing" >&2; exit 1; }
+expect_status 204 --user einstein:test-password -X DELETE "$DAV_URL/bulk-list"
+echo "bulk listing ($LISTING_FILES files) OK"
+# malformed LOCK XML must not crash revad
+badlock_status=$(curl -sS -o /tmp/badlock-response -w '%{http_code}' --max-time 10 --user einstein:test-password -X LOCK -H 'Content-Type: application/xml' --data-binary '<D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/>' "$DAV_URL/malformed-lock-$test_id.txt" || echo 000)
+echo "malformed LOCK returned HTTP $badlock_status"
+[[ "$badlock_status" =~ ^4[0-9][0-9]$ ]] || {
+  echo "malformed LOCK XML returned unexpected HTTP $badlock_status" >&2
+  exit 1
+}
+kill -0 "$revad_pid" || { echo "revad crashed on malformed LOCK XML" >&2; exit 1; }
+
 sed 's|loginfilter = "(uid={{login}})"|loginfilter = "(uid=disabled-{{login}})"|' \
   "$runtime_config" >/tmp/revad-config-changed.toml
 grep -q 'loginfilter = "(uid=disabled-{{login}})"' /tmp/revad-config-changed.toml || {
