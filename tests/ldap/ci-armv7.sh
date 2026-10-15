@@ -791,6 +791,81 @@ list_status=$(curl -sS -o /tmp/bulk-list-response -w '%{http_code}' --max-time 6
 kill -0 "$revad_pid" || { echo "revad crashed during bulk listing" >&2; exit 1; }
 expect_status 204 --user einstein:test-password -X DELETE "$DAV_URL/bulk-list"
 echo "bulk listing ($LISTING_FILES files) OK"
+# --- LOCK semantics deep dive ---
+lock_res=$DAV_URL/lock-semantics-$test_id.txt
+echo test-content > /tmp/lock-src-$test_id.txt
+expect_status 201 --user einstein:test-password -T /tmp/lock-src-$test_id.txt "$lock_res"
+
+# 1) 排他ロック取得 + IfヘッダなしPUTが423で拒否されること
+lock_resp=$(curl -sS --max-time 10 --user einstein:test-password -X LOCK -H 'Timeout: Second-60' -H 'Content-Type: application/xml' --data '<?xml version="1.0"?><D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/></D:lockscope><D:locktype><D:write/></D:locktype></D:lockinfo>' "$lock_res")
+lock_token=$(printf '%s' "$lock_resp" | grep -o 'opaquelocktoken:[^<]*' | head -1)
+[[ -n "$lock_token" ]] || { echo "LOCK did not return a lock token" >&2; printf '%s\n' "$lock_resp" >&2; exit 1; }
+status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 --user einstein:test-password -T /tmp/lock-src-$test_id.txt "$lock_res")
+[[ "$status" == 423 ]] || { echo "PUT on locked resource returned $status, expected 423" >&2; exit 1; }
+
+# 2) Ifヘッダ付きPUT（ロックトークン提示）で更新できること
+status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 --user einstein:test-password -H "If: (<$lock_token>)" -T /tmp/lock-src-$test_id.txt "$lock_res")
+case "$status" in 200|201|204) ;; *) echo "PUT with lock token returned $status, expected 200/201/204" >&2; exit 1 ;; esac
+expect_status 204 --user einstein:test-password -X UNLOCK -H "Lock-Token: <$lock_token>" "$lock_res"
+
+# 3) 共有ロック同士は共存可能、共有+排他は拒否
+shared_body='<?xml version="1.0"?><D:lockinfo xmlns:D="DAV:"><D:lockscope><D:shared/></D:lockscope><D:locktype><D:write/></D:locktype></D:lockinfo>'
+shared_resp1=$(curl -sS --max-time 10 --user einstein:test-password -X LOCK -H 'Timeout: Second-60' -H 'Content-Type: application/xml' --data "$shared_body" "$lock_res")
+shared_tok1=$(printf '%s' "$shared_resp1" | grep -o 'opaquelocktoken:[^<]*' | head -1)
+[[ -n "$shared_tok1" ]] || { echo "shared LOCK 1 did not return a token" >&2; printf '%s\n' "$shared_resp1" >&2; exit 1; }
+shared_resp2=$(curl -sS -w '\n%{http_code}' --max-time 10 --user einstein:test-password -X LOCK -H 'Timeout: Second-60' -H 'Content-Type: application/xml' --data "$shared_body" "$lock_res")
+shared_rc2=$(printf '%s' "$shared_resp2" | tail -1)
+shared_tok2=$(printf '%s' "$shared_resp2" | grep -o 'opaquelocktoken:[^<]*' | head -1)
+[[ -n "$shared_tok2" ]] || { echo "second shared LOCK returned $shared_rc2 without token" >&2; exit 1; }
+excl_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 --user einstein:test-password -X LOCK -H 'Timeout: Second-60' -H 'Content-Type: application/xml' --data '<?xml version="1.0"?><D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/></D:lockscope><D:locktype><D:write/></D:locktype></D:lockinfo>' "$lock_res")
+[[ "$excl_status" == 423 ]] || { echo "exclusive LOCK over shared locks returned $excl_status, expected 423" >&2; exit 1; }
+expect_status 204 --user einstein:test-password -X UNLOCK -H "Lock-Token: <$shared_tok1>" "$lock_res"
+expect_status 204 --user einstein:test-password -X UNLOCK -H "Lock-Token: <$shared_tok2>" "$lock_res"
+echo "LOCK semantics (If header, shared/exclusive) OK"
+
+# --- ETag conditional / Range / content-type / empty file ---
+etag_res=$DAV_URL/etag-$test_id.txt
+printf 'hello-etag-body' > /tmp/etag-src.txt
+expect_status 201 --user einstein:test-password -T /tmp/etag-src.txt "$etag_res"
+etag=$(curl -sSI --max-time 10 --user einstein:test-password "$etag_res" | tr -d '\r' | sed -n 's/^[Ee][Tt][Aa][Gg]: *//p' | head -1)
+if [[ -n "$etag" ]]; then
+  st=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 --user einstein:test-password -H "If-Match: \"wrong-etag\"" -T /tmp/etag-src.txt "$etag_res")
+  [[ "$st" == 412 ]] || { echo "If-Match wrong etag returned $st, expected 412" >&2; exit 1; }
+  st=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 --user einstein:test-password -H "If-Match: $etag" -T /tmp/etag-src.txt "$etag_res")
+  case "$st" in 200|204) ;; *) echo "If-Match correct etag returned $st" >&2; exit 1 ;; esac
+  echo "If-Match ETag conditional OK (etag=$etag)"
+else
+  echo "WARN: no ETag header; skipping If-Match checks" >&2
+fi
+st=$(curl -sS -o /tmp/range-body -w '%{http_code}' --max-time 10 --user einstein:test-password -H 'Range: bytes=0-4' "$etag_res")
+if [[ "$st" == 206 ]]; then
+  [[ "$(cat /tmp/range-body)" == "hello" ]] || { echo "Range body mismatch: $(cat /tmp/range-body)" >&2; exit 1; }
+  echo "Range GET (206) OK"
+elif [[ "$st" == 200 || "$st" == 416 ]]; then
+  echo "WARN: Range GET not supported (returned $st)" >&2
+else
+  echo "Range GET returned unexpected $st" >&2; exit 1
+fi
+ct_res=$DAV_URL/ct-$test_id.css
+printf 'body{color:red}' > /tmp/ct-src.css
+expect_status 201 --user einstein:test-password -H 'Content-Type: text/css' -T /tmp/ct-src.css "$ct_res"
+ct=$(curl -sSI --max-time 10 --user einstein:test-password "$ct_res" | tr -d '\r' | sed -n 's/^[Cc]ontent-[Tt]ype: *//p' | head -1)
+[[ "$ct" == *css* ]] || { echo "Content-Type not preserved: got '$ct'" >&2; exit 1; }
+: > /tmp/empty-src.txt
+expect_status 201 --user einstein:test-password -T /tmp/empty-src.txt "$DAV_URL/empty-$test_id.txt"
+sz=$(curl -sS --max-time 10 --user einstein:test-password "$DAV_URL/empty-$test_id.txt" | wc -c)
+[[ "$sz" == 0 ]] || { echo "empty file round-trip size=$sz" >&2; exit 1; }
+echo "content-type / empty file OK"
+
+# --- nested directory MOVE ---
+nested_src=$DAV_URL/nested-src-$test_id
+nested_dst=$DAV_URL/nested-dst-$test_id
+expect_status 201 --user einstein:test-password -X MKCOL "$nested_src"
+expect_status 201 --user einstein:test-password -X MKCOL "$nested_src/sub"
+expect_status 201 --user einstein:test-password -T /tmp/etag-src.txt "$nested_src/sub/file.txt"
+expect_status 201 --user einstein:test-password -X MOVE "$nested_src" -H "Destination: $nested_dst"
+expect_status 207 --user einstein:test-password -X PROPFIND -H 'Depth: 1' "$nested_dst/sub/file.txt"
+echo "nested MOVE OK"
 # malformed LOCK XML must not crash revad
 badlock_status=$(curl -sS -o /tmp/badlock-response -w '%{http_code}' --max-time 10 --user einstein:test-password -X LOCK -H 'Content-Type: application/xml' --data-binary '<D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/>' "$DAV_URL/malformed-lock-$test_id.txt" || echo 000)
 echo "malformed LOCK returned HTTP $badlock_status"
