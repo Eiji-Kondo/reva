@@ -866,6 +866,41 @@ expect_status 201 --user einstein:test-password -T /tmp/etag-src.txt "$nested_sr
 expect_status 201 --user einstein:test-password -X MOVE "$nested_src" -H "Destination: $nested_dst"
 expect_status 207 --user einstein:test-password -X PROPFIND -H 'Depth: 1' "$nested_dst/sub/file.txt"
 echo "nested MOVE OK"
+# --- LOCK timeout auto-expiry ---
+timeout_res=$DAV_URL/lock-timeout-$test_id.txt
+echo timeout-test > /tmp/lock-timeout-src-$test_id.txt
+expect_status 201 --user einstein:test-password -T /tmp/lock-timeout-src-$test_id.txt "$timeout_res"
+lock_timeout_body='<?xml version="1.0"?><D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/></D:lockscope><D:locktype><D:write/></D:locktype></D:lockinfo>'
+lock_st=$(curl -sS -o /tmp/lock-timeout-response -D /tmp/lock-timeout-headers -w '%{http_code}' --max-time 10 --user einstein:test-password -X LOCK -H 'Depth: 0' -H 'Timeout: Second-4' -H 'Content-Type: application/xml' --data "$lock_timeout_body" "$timeout_res")
+[[ "$lock_st" == 200 ]] || { echo "LOCK (timeout) returned $lock_st" >&2; cat /tmp/lock-timeout-response >&2; exit 1; }
+timeout_tok=$(awk 'tolower($1) == "lock-token:" { gsub(/[<>]/, "", $2); sub(/\r$/, "", $2); print $2; exit }' /tmp/lock-timeout-headers)
+[[ -n "$timeout_tok" ]] || timeout_tok=$(grep -o 'opaquelocktoken:[^<]*' /tmp/lock-timeout-response | head -1)
+# ロック中のPUTが423で拒否されること
+lock_timeout_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 --user einstein:test-password -T /tmp/lock-timeout-src-$test_id.txt "$timeout_res")
+[[ "$lock_timeout_status" == 423 ]] || { echo "PUT on timeout-locked resource returned $lock_timeout_status, expected 423" >&2; exit 1; }
+# タイムアウト(4秒)経過後にロックが自動解除されること
+sleep 6
+lock_timeout_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 --user einstein:test-password -T /tmp/lock-timeout-src-$test_id.txt "$timeout_res")
+case "$lock_timeout_status" in
+  200|201|204) echo "LOCK timeout auto-expiry OK" ;;
+  *) echo "PUT after lock timeout returned $lock_timeout_status" >&2; exit 1 ;;
+esac
+expect_status 204 --user einstein:test-password -X DELETE "$timeout_res"
+# --- MOVE/COPY Overwrite: F header ---
+ov_src=$DAV_URL/overwrite-src-$test_id.txt
+ov_dst=$DAV_URL/overwrite-dst-$test_id.txt
+echo src-content > /tmp/ov-src-$test_id.txt
+echo dst-content > /tmp/ov-dst-$test_id.txt
+expect_status 201 --user einstein:test-password -T /tmp/ov-src-$test_id.txt "$ov_src"
+expect_status 201 --user einstein:test-password -T /tmp/ov-dst-$test_id.txt "$ov_dst"
+ov_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 --user einstein:test-password -X MOVE -H 'Overwrite: F' -H "Destination: $ov_dst" "$ov_src")
+[[ "$ov_status" == 412 ]] || { echo "MOVE Overwrite:F returned $ov_status, expected 412" >&2; exit 1; }
+ov_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 --user einstein:test-password -X COPY -H 'Overwrite: F' -H "Destination: $ov_dst" "$ov_src")
+[[ "$ov_status" == 412 ]] || { echo "COPY Overwrite:F returned $ov_status, expected 412" >&2; exit 1; }
+echo "Overwrite: F (MOVE/COPY) OK"
+expect_status 204 --user einstein:test-password -X DELETE "$ov_src"
+expect_status 204 --user einstein:test-password -X DELETE "$ov_dst"
+
 # malformed LOCK XML must not crash revad
 badlock_status=$(curl -sS -o /tmp/badlock-response -w '%{http_code}' --max-time 10 --user einstein:test-password -X LOCK -H 'Content-Type: application/xml' --data-binary '<D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/>' "$DAV_URL/malformed-lock-$test_id.txt" || echo 000)
 echo "malformed LOCK returned HTTP $badlock_status"
