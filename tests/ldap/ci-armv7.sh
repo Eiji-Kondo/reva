@@ -1,8 +1,45 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd /workspace
+# --- dual-mode switches ---
+# SKIP_ENV_SETUP=1: 実機など環境構築済みの環境向け。apt/slapd初期化/go buildをスキップし、
+# 既存のrevad設定とシステムLDAPを使う。LDAPを変更/停止するテストもスキップする。
+SKIP_ENV_SETUP="${SKIP_ENV_SETUP:-0}"
+REVAD_BIN="${REVAD_BIN:-./cmd/revad/revad}"
+REVA_BIN="${REVA_BIN:-./cmd/reva/reva}"
+CONFIG_FILE="${CONFIG_FILE:-}"
+DEVICE_WORKDIR="${DEVICE_WORKDIR:-$HOME/reva}"
+MAX_TIME="${MAX_TIME:-10}"
+LOCK_TIMEOUT_WAIT="${LOCK_TIMEOUT_WAIT:-6}"
 
+if [[ "$SKIP_ENV_SETUP" == "1" ]]; then
+  cd "$DEVICE_WORKDIR"
+else
+  cd /workspace
+fi
+
+test_id="$(date +%s%N)"
+runtime_root="./tmp/revalocalstorage-$test_id"
+runtime_db="./tmp/revalocalstorage-$test_id.db"
+runtime_config="${CONFIG_FILE:-/tmp/revad-localhome-$test_id.toml}"
+cleanup() {
+  if [[ "$SKIP_ENV_SETUP" != "1" && "${temporary_user_created:-0}" == 1 ]]; then
+    ldapdelete -x -H ldaps://localhost:636 -D 'cn=admin,dc=owncloud,dc=com' -w admin 'uid=revad-temporary,ou=users,dc=owncloud,dc=com' >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${slapd_pid:-}" ]] && kill -0 "$slapd_pid" 2>/dev/null; then
+    kill "$slapd_pid"; wait "$slapd_pid" || true
+  fi
+  if [[ -n "${revad_pid:-}" ]] && kill -0 "$revad_pid" 2>/dev/null; then
+    kill "$revad_pid"; wait "$revad_pid" || true
+  fi
+  if [[ "$SKIP_ENV_SETUP" != "1" ]]; then
+    rm -f -- "$runtime_config" "$runtime_db" "$runtime_db-shm" "$runtime_db-wal"
+    rm -rf -- "$runtime_root"
+  fi
+}
+trap cleanup EXIT
+temporary_user_created=0
+if [[ "$SKIP_ENV_SETUP" != "1" ]]; then
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 printf '%s\n' \
@@ -120,6 +157,8 @@ ldapsearch -x -H ldaps://localhost:636 \
 ldapwhoami -x -H ldaps://localhost:636 \
   -D 'uid=marie,ou=users,dc=owncloud,dc=com' -w test-password
 
+fi
+if [[ "$SKIP_ENV_SETUP" != "1" ]]; then
 build_binary() {
   local output="$1"
   local package="$2"
@@ -132,22 +171,29 @@ build_binary() {
 }
 
 if [[ "${SKIP_BUILD:-0}" == "1" ]]; then
-  [[ -x ./cmd/revad/revad && -x ./cmd/reva/reva ]] || {
+  [[ -x "$REVAD_BIN" && -x "$REVA_BIN" ]] || {
     echo "SKIP_BUILD=1 requires prebuilt revad and reva binaries" >&2
     exit 1
   }
 else
-  build_binary ./cmd/revad/revad ./cmd/revad/main
-  build_binary ./cmd/reva/reva ./cmd/reva
+  build_binary "$REVAD_BIN" ./cmd/revad/main
+  build_binary "$REVA_BIN" ./cmd/reva
 fi
 sed \
   -e "s|db_name = \"test\"|db_name = \"$runtime_db\"|" \
   -e "s|root = \"./tmp/revalocalstorage\"|root = \"$runtime_root\"|g" \
   tests/revad/revad-localhome.toml >"$runtime_config"
-./cmd/revad/revad -t -c "$runtime_config"
+"$REVAD_BIN" -t -c "$runtime_config"
 mkdir -p "$runtime_root/shares"
-./cmd/revad/revad -c "$runtime_config" >/tmp/revad.log 2>&1 &
+"$REVAD_BIN" -c "$runtime_config" >/tmp/revad.log 2>&1 &
 revad_pid=$!
+else
+  [[ -x "$REVAD_BIN" && -x "$REVA_BIN" && -n "$CONFIG_FILE" && -f "$CONFIG_FILE" ]] || {
+    echo "SKIP_ENV_SETUP=1 requires REVAD_BIN, REVA_BIN and CONFIG_FILE" >&2; exit 1; }
+  "$REVAD_BIN" -t -c "$runtime_config"
+  "$REVAD_BIN" -c "$runtime_config" >/tmp/revad.log 2>&1 &
+  revad_pid=$!
+fi
 
 DAV_URL=http://127.0.0.1:38001/remote.php/webdav
 OCS_URL=http://127.0.0.1:38001/ocs/v2.php
@@ -194,7 +240,7 @@ restart_revad() {
     wait "$revad_pid" || true
   fi
   revad_pid=""
-  ./cmd/revad/revad -c "$runtime_config" >>/tmp/revad.log 2>&1 &
+  "$REVAD_BIN" -c "$runtime_config" >>/tmp/revad.log 2>&1 &
   revad_pid=$!
   for attempt in $(seq 1 60); do
     if ! kill -0 "$revad_pid" 2>/dev/null; then
@@ -214,31 +260,6 @@ restart_revad() {
   exit 1
 }
 
-restart_revad() {
-  if [[ -n "$revad_pid" ]] && kill -0 "$revad_pid" 2>/dev/null; then
-    kill -TERM "$revad_pid"
-    wait "$revad_pid" || true
-  fi
-  revad_pid=""
-  ./cmd/revad/revad -c "$runtime_config" >>/tmp/revad.log 2>&1 &
-  revad_pid=$!
-  for attempt in $(seq 1 60); do
-    if ! kill -0 "$revad_pid" 2>/dev/null; then
-      cat /tmp/revad.log >&2
-      echo "revad exited before becoming ready after restart" >&2
-      exit 1
-    fi
-    status=$(curl -sS -o /dev/null -w '%{http_code}' \
-      --user einstein:test-password -X OPTIONS "$DAV_URL/" || true)
-    if [[ "$status" != 000 ]]; then
-      return
-    fi
-    sleep 1
-  done
-  cat /tmp/revad.log >&2
-  echo "revad did not become ready after restart" >&2
-  exit 1
-}
 
 expect_status 401 -X PROPFIND -H 'Depth: 0' "$DAV_URL/"
 expect_status 401 --user einstein:wrong-password \
@@ -250,6 +271,7 @@ expect_status 207 --user einstein:test-password \
 expect_status 207 --user marie:test-password \
   -X PROPFIND -H 'Depth: 0' "$DAV_URL/"
 
+if [[ "$SKIP_ENV_SETUP" != "1" ]]; then
 temporary_user_hash=$(slappasswd -s test-password)
 cat >/tmp/reva-temporary-user.ldif <<EOF
 dn: uid=revad-temporary,ou=users,dc=owncloud,dc=com
@@ -362,6 +384,7 @@ duplicate_search_status=$(curl -sS -o /tmp/sharees-response -w '%{http_code}' \
 }
 rm -f /tmp/reva-duplicate-users.ldif
 rm -f /tmp/reva-update-user.ldif /tmp/reva-restore-user.ldif
+fi
 
 expect_status 204 -D /tmp/options-headers --user einstein:test-password \
   -X OPTIONS "$DAV_URL/"
@@ -564,17 +587,17 @@ expect_status 200 --user einstein:test-password -I "$DAV_URL/ci-moved-$test_id.t
 owner_token=/tmp/reva-token-einstein
 recipient_token=/tmp/reva-token-marie
 share_dir="share-ci-$test_id"
-./cmd/reva/reva -insecure -host=localhost:9142 -token-file="$owner_token" \
+"$REVA_BIN" -insecure -host=localhost:9142 -token-file="$owner_token" \
   login --username=einstein --password=test-password basic
-./cmd/reva/reva -insecure -host=localhost:9142 -token-file="$recipient_token" \
+"$REVA_BIN" -insecure -host=localhost:9142 -token-file="$recipient_token" \
   login --username=marie --password=test-password basic
-./cmd/reva/reva -insecure -host=localhost:9142 -token-file="$owner_token" \
+"$REVA_BIN" -insecure -host=localhost:9142 -token-file="$owner_token" \
   mkdir "/localfs/$share_dir"
 printf 'shared localhomefs content\n' >/tmp/shared-test.txt
 expect_status 201 --user einstein:test-password \
   -T /tmp/shared-test.txt "$DAV_URL/$share_dir/shared.txt"
 
-./cmd/reva/reva -insecure -host=localhost:9142 -token-file="$owner_token" \
+"$REVA_BIN" -insecure -host=localhost:9142 -token-file="$owner_token" \
   share-create -grantee=marie -idp=http://localhost:20080 -role=viewer \
   "/localfs/$share_dir/shared.txt" \
   >/tmp/viewer-share.txt
@@ -583,7 +606,7 @@ if grep -q 'initiate_file_upload:true' /tmp/viewer-share.txt; then
   echo "viewer share unexpectedly includes upload permission" >&2
   exit 1
 fi
-received_shares=$(./cmd/reva/reva -insecure -host=localhost:9142 \
+received_shares=$("$REVA_BIN" -insecure -host=localhost:9142 \
   -token-file="$recipient_token" share-list-received)
 printf '%s\n' "$received_shares"
 received_share_id=$(printf '%s\n' "$received_shares" |
@@ -592,7 +615,7 @@ if [[ -z "$received_share_id" ]]; then
   echo "Marie did not receive Einstein's viewer share" >&2
   exit 1
 fi
-./cmd/reva/reva -insecure -host=localhost:9142 -token-file="$recipient_token" \
+"$REVA_BIN" -insecure -host=localhost:9142 -token-file="$recipient_token" \
   share-update-received -state=accepted "$received_share_id"
 recipient_share_path="$DAV_URL/MyShares/shared.txt"
 expect_status 200 --user marie:test-password "$recipient_share_path"
@@ -602,23 +625,23 @@ expect_status 403 --user marie:test-password -T /tmp/localhome-test.txt \
 expect_status 200 --user einstein:test-password \
   "$DAV_URL/$share_dir/shared.txt"
 cmp /tmp/shared-test.txt /tmp/dav-response
-owner_shares=$(./cmd/reva/reva -insecure -host=localhost:9142 \
+owner_shares=$("$REVA_BIN" -insecure -host=localhost:9142 \
   -token-file="$owner_token" share-list)
 grep -q 'marie' <<<"$owner_shares"
-./cmd/reva/reva -insecure -host=localhost:9142 -token-file="$recipient_token" \
+"$REVA_BIN" -insecure -host=localhost:9142 -token-file="$recipient_token" \
   share-update-received -state=rejected "$received_share_id"
 expect_status 404 --user marie:test-password "$recipient_share_path"
 
 printf 'editor permission test\n' >/tmp/editor-test.txt
 expect_status 201 --user einstein:test-password \
   -T /tmp/editor-test.txt "$DAV_URL/$share_dir/editor.txt"
-./cmd/reva/reva -insecure -host=localhost:9142 -token-file="$owner_token" \
+"$REVA_BIN" -insecure -host=localhost:9142 -token-file="$owner_token" \
   share-create -grantee=marie -idp=http://localhost:20080 -role=editor \
   "/localfs/$share_dir/editor.txt" \
   >/tmp/editor-share.txt
 grep -q 'initiate_file_upload:true' /tmp/editor-share.txt
 grep -q 'create_container:true' /tmp/editor-share.txt
-received_shares=$(./cmd/reva/reva -insecure -host=localhost:9142 \
+received_shares=$("$REVA_BIN" -insecure -host=localhost:9142 \
   -token-file="$recipient_token" share-list-received)
 editor_share_id=$(printf '%s\n' "$received_shares" |
   awk -F '|' -v previous="$received_share_id" \
@@ -627,7 +650,7 @@ if [[ -z "$editor_share_id" ]]; then
   echo "Marie did not receive Einstein's editor share" >&2
   exit 1
 fi
-./cmd/reva/reva -insecure -host=localhost:9142 -token-file="$recipient_token" \
+"$REVA_BIN" -insecure -host=localhost:9142 -token-file="$recipient_token" \
   share-update-received -state=accepted "$editor_share_id"
 editor_share_path="$DAV_URL/MyShares/editor.txt"
 editor_owner_path="$DAV_URL/$share_dir/editor.txt"
@@ -775,7 +798,7 @@ expect_status 204 --user einstein:test-password -X DELETE "$DAV_URL/put-partial.
 echo "PUT interruption recovery OK"
 # --- 認証失敗連続時の健全性 ---
 for n in 1 2 3 4 5; do
-  bad_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 --user einstein:wrong-password "$DAV_URL/" || true)
+  bad_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time "$MAX_TIME" --user einstein:wrong-password "$DAV_URL/" || true)
 done
 expect_status 207 --user einstein:test-password -X PROPFIND -H 'Depth: 0' "$DAV_URL/"
 echo "repeated auth failure resilience OK"
@@ -784,7 +807,7 @@ LISTING_FILES="${LISTING_FILES:-100}"
 [[ "$LISTING_FILES" =~ ^[0-9]+$ ]] || LISTING_FILES=100
 expect_status 201 --user einstein:test-password -X MKCOL "$DAV_URL/bulk-list"
 for n in $(seq 1 "$LISTING_FILES"); do
-  curl -sS -o /dev/null --max-time 10 --user einstein:test-password -T /tmp/put-partial-src.bin "$DAV_URL/bulk-list/file-$n.txt" >/dev/null 2>&1 || true
+  curl -sS -o /dev/null --max-time "$MAX_TIME" --user einstein:test-password -T /tmp/put-partial-src.bin "$DAV_URL/bulk-list/file-$n.txt" >/dev/null 2>&1 || true
 done
 list_status=$(curl -sS -o /tmp/bulk-list-response -w '%{http_code}' --max-time 60 --user einstein:test-password -X PROPFIND -H 'Depth: 1' "$DAV_URL/bulk-list/" || true)
 [[ "$list_status" == 207 ]] || { echo "bulk listing returned HTTP $list_status, expected 207" >&2; exit 1; }
@@ -797,27 +820,27 @@ echo test-content > /tmp/lock-src-$test_id.txt
 expect_status 201 --user einstein:test-password -T /tmp/lock-src-$test_id.txt "$lock_res"
 
 # 1) 排他ロック取得 + IfヘッダなしPUTが423で拒否されること
-lock_resp=$(curl -sS --max-time 10 --user einstein:test-password -X LOCK -H 'Timeout: Second-60' -H 'Content-Type: application/xml' --data '<?xml version="1.0"?><D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/></D:lockscope><D:locktype><D:write/></D:locktype></D:lockinfo>' "$lock_res")
+lock_resp=$(curl -sS --max-time "$MAX_TIME" --user einstein:test-password -X LOCK -H 'Timeout: Second-60' -H 'Content-Type: application/xml' --data '<?xml version="1.0"?><D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/></D:lockscope><D:locktype><D:write/></D:locktype></D:lockinfo>' "$lock_res")
 lock_token=$(printf '%s' "$lock_resp" | grep -o 'opaquelocktoken:[^<]*' | head -1)
 [[ -n "$lock_token" ]] || { echo "LOCK did not return a lock token" >&2; printf '%s\n' "$lock_resp" >&2; exit 1; }
-status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 --user einstein:test-password -T /tmp/lock-src-$test_id.txt "$lock_res")
+status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time "$MAX_TIME" --user einstein:test-password -T /tmp/lock-src-$test_id.txt "$lock_res")
 [[ "$status" == 423 ]] || { echo "PUT on locked resource returned $status, expected 423" >&2; exit 1; }
 
 # 2) Ifヘッダ付きPUT（ロックトークン提示）で更新できること
-status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 --user einstein:test-password -H "If: (<$lock_token>)" -T /tmp/lock-src-$test_id.txt "$lock_res")
+status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time "$MAX_TIME" --user einstein:test-password -H "If: (<$lock_token>)" -T /tmp/lock-src-$test_id.txt "$lock_res")
 case "$status" in 200|201|204) ;; *) echo "PUT with lock token returned $status, expected 200/201/204" >&2; exit 1 ;; esac
 expect_status 204 --user einstein:test-password -X UNLOCK -H "Lock-Token: <$lock_token>" "$lock_res"
 
 # 3) 共有ロック同士は共存可能、共有+排他は拒否
 shared_body='<?xml version="1.0"?><D:lockinfo xmlns:D="DAV:"><D:lockscope><D:shared/></D:lockscope><D:locktype><D:write/></D:locktype></D:lockinfo>'
-shared_resp1=$(curl -sS --max-time 10 --user einstein:test-password -X LOCK -H 'Timeout: Second-60' -H 'Content-Type: application/xml' --data "$shared_body" "$lock_res")
+shared_resp1=$(curl -sS --max-time "$MAX_TIME" --user einstein:test-password -X LOCK -H 'Timeout: Second-60' -H 'Content-Type: application/xml' --data "$shared_body" "$lock_res")
 shared_tok1=$(printf '%s' "$shared_resp1" | grep -o 'opaquelocktoken:[^<]*' | head -1)
 [[ -n "$shared_tok1" ]] || { echo "shared LOCK 1 did not return a token" >&2; printf '%s\n' "$shared_resp1" >&2; exit 1; }
-shared_resp2=$(curl -sS -w '\n%{http_code}' --max-time 10 --user einstein:test-password -X LOCK -H 'Timeout: Second-60' -H 'Content-Type: application/xml' --data "$shared_body" "$lock_res")
+shared_resp2=$(curl -sS -w '\n%{http_code}' --max-time "$MAX_TIME" --user einstein:test-password -X LOCK -H 'Timeout: Second-60' -H 'Content-Type: application/xml' --data "$shared_body" "$lock_res")
 shared_rc2=$(printf '%s' "$shared_resp2" | tail -1)
 shared_tok2=$(printf '%s' "$shared_resp2" | grep -o 'opaquelocktoken:[^<]*' | head -1)
 [[ -n "$shared_tok2" ]] || { echo "second shared LOCK returned $shared_rc2 without token" >&2; exit 1; }
-excl_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 --user einstein:test-password -X LOCK -H 'Timeout: Second-60' -H 'Content-Type: application/xml' --data '<?xml version="1.0"?><D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/></D:lockscope><D:locktype><D:write/></D:locktype></D:lockinfo>' "$lock_res")
+excl_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time "$MAX_TIME" --user einstein:test-password -X LOCK -H 'Timeout: Second-60' -H 'Content-Type: application/xml' --data '<?xml version="1.0"?><D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/></D:lockscope><D:locktype><D:write/></D:locktype></D:lockinfo>' "$lock_res")
 [[ "$excl_status" == 423 ]] || { echo "exclusive LOCK over shared locks returned $excl_status, expected 423" >&2; exit 1; }
 expect_status 204 --user einstein:test-password -X UNLOCK -H "Lock-Token: <$shared_tok1>" "$lock_res"
 expect_status 204 --user einstein:test-password -X UNLOCK -H "Lock-Token: <$shared_tok2>" "$lock_res"
@@ -827,17 +850,17 @@ echo "LOCK semantics (If header, shared/exclusive) OK"
 etag_res=$DAV_URL/etag-$test_id.txt
 printf 'hello-etag-body' > /tmp/etag-src.txt
 expect_status 201 --user einstein:test-password -T /tmp/etag-src.txt "$etag_res"
-etag=$(curl -sSI --max-time 10 --user einstein:test-password "$etag_res" | tr -d '\r' | sed -n 's/^[Ee][Tt][Aa][Gg]: *//p' | head -1)
+etag=$(curl -sSI --max-time "$MAX_TIME" --user einstein:test-password "$etag_res" | tr -d '\r' | sed -n 's/^[Ee][Tt][Aa][Gg]: *//p' | head -1)
 if [[ -n "$etag" ]]; then
-  st=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 --user einstein:test-password -H "If-Match: \"wrong-etag\"" -T /tmp/etag-src.txt "$etag_res")
+  st=$(curl -sS -o /dev/null -w '%{http_code}' --max-time "$MAX_TIME" --user einstein:test-password -H "If-Match: \"wrong-etag\"" -T /tmp/etag-src.txt "$etag_res")
   [[ "$st" == 412 ]] || { echo "If-Match wrong etag returned $st, expected 412" >&2; exit 1; }
-  st=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 --user einstein:test-password -H "If-Match: $etag" -T /tmp/etag-src.txt "$etag_res")
+  st=$(curl -sS -o /dev/null -w '%{http_code}' --max-time "$MAX_TIME" --user einstein:test-password -H "If-Match: $etag" -T /tmp/etag-src.txt "$etag_res")
   case "$st" in 200|204) ;; *) echo "If-Match correct etag returned $st" >&2; exit 1 ;; esac
   echo "If-Match ETag conditional OK (etag=$etag)"
 else
   echo "WARN: no ETag header; skipping If-Match checks" >&2
 fi
-st=$(curl -sS -o /tmp/range-body -w '%{http_code}' --max-time 10 --user einstein:test-password -H 'Range: bytes=0-4' "$etag_res")
+st=$(curl -sS -o /tmp/range-body -w '%{http_code}' --max-time "$MAX_TIME" --user einstein:test-password -H 'Range: bytes=0-4' "$etag_res")
 if [[ "$st" == 206 ]]; then
   [[ "$(cat /tmp/range-body)" == "hello" ]] || { echo "Range body mismatch: $(cat /tmp/range-body)" >&2; exit 1; }
   echo "Range GET (206) OK"
@@ -849,11 +872,11 @@ fi
 ct_res=$DAV_URL/ct-$test_id.css
 printf 'body{color:red}' > /tmp/ct-src.css
 expect_status 201 --user einstein:test-password -H 'Content-Type: text/css' -T /tmp/ct-src.css "$ct_res"
-ct=$(curl -sSI --max-time 10 --user einstein:test-password "$ct_res" | tr -d '\r' | sed -n 's/^[Cc]ontent-[Tt]ype: *//p' | head -1)
+ct=$(curl -sSI --max-time "$MAX_TIME" --user einstein:test-password "$ct_res" | tr -d '\r' | sed -n 's/^[Cc]ontent-[Tt]ype: *//p' | head -1)
 [[ "$ct" == *css* ]] || { echo "Content-Type not preserved: got '$ct'" >&2; exit 1; }
 : > /tmp/empty-src.txt
 expect_status 201 --user einstein:test-password -T /tmp/empty-src.txt "$DAV_URL/empty-$test_id.txt"
-sz=$(curl -sS --max-time 10 --user einstein:test-password "$DAV_URL/empty-$test_id.txt" | wc -c)
+sz=$(curl -sS --max-time "$MAX_TIME" --user einstein:test-password "$DAV_URL/empty-$test_id.txt" | wc -c)
 [[ "$sz" == 0 ]] || { echo "empty file round-trip size=$sz" >&2; exit 1; }
 echo "content-type / empty file OK"
 
@@ -871,16 +894,16 @@ timeout_res=$DAV_URL/lock-timeout-$test_id.txt
 echo timeout-test > /tmp/lock-timeout-src-$test_id.txt
 expect_status 201 --user einstein:test-password -T /tmp/lock-timeout-src-$test_id.txt "$timeout_res"
 lock_timeout_body='<?xml version="1.0"?><D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/></D:lockscope><D:locktype><D:write/></D:locktype></D:lockinfo>'
-lock_st=$(curl -sS -o /tmp/lock-timeout-response -D /tmp/lock-timeout-headers -w '%{http_code}' --max-time 10 --user einstein:test-password -X LOCK -H 'Depth: 0' -H 'Timeout: Second-4' -H 'Content-Type: application/xml' --data "$lock_timeout_body" "$timeout_res")
+lock_st=$(curl -sS -o /tmp/lock-timeout-response -D /tmp/lock-timeout-headers -w '%{http_code}' --max-time "$MAX_TIME" --user einstein:test-password -X LOCK -H 'Depth: 0' -H 'Timeout: Second-4' -H 'Content-Type: application/xml' --data "$lock_timeout_body" "$timeout_res")
 [[ "$lock_st" == 200 ]] || { echo "LOCK (timeout) returned $lock_st" >&2; cat /tmp/lock-timeout-response >&2; exit 1; }
 timeout_tok=$(awk 'tolower($1) == "lock-token:" { gsub(/[<>]/, "", $2); sub(/\r$/, "", $2); print $2; exit }' /tmp/lock-timeout-headers)
 [[ -n "$timeout_tok" ]] || timeout_tok=$(grep -o 'opaquelocktoken:[^<]*' /tmp/lock-timeout-response | head -1)
 # ロック中のPUTが423で拒否されること
-lock_timeout_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 --user einstein:test-password -T /tmp/lock-timeout-src-$test_id.txt "$timeout_res")
+lock_timeout_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time "$MAX_TIME" --user einstein:test-password -T /tmp/lock-timeout-src-$test_id.txt "$timeout_res")
 [[ "$lock_timeout_status" == 423 ]] || { echo "PUT on timeout-locked resource returned $lock_timeout_status, expected 423" >&2; exit 1; }
 # タイムアウト(4秒)経過後にロックが自動解除されること
-sleep 6
-lock_timeout_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 --user einstein:test-password -T /tmp/lock-timeout-src-$test_id.txt "$timeout_res")
+sleep "$LOCK_TIMEOUT_WAIT"
+lock_timeout_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time "$MAX_TIME" --user einstein:test-password -T /tmp/lock-timeout-src-$test_id.txt "$timeout_res")
 case "$lock_timeout_status" in
   200|201|204) echo "LOCK timeout auto-expiry OK" ;;
   *) echo "PUT after lock timeout returned $lock_timeout_status" >&2; exit 1 ;;
@@ -893,16 +916,16 @@ echo src-content > /tmp/ov-src-$test_id.txt
 echo dst-content > /tmp/ov-dst-$test_id.txt
 expect_status 201 --user einstein:test-password -T /tmp/ov-src-$test_id.txt "$ov_src"
 expect_status 201 --user einstein:test-password -T /tmp/ov-dst-$test_id.txt "$ov_dst"
-ov_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 --user einstein:test-password -X MOVE -H 'Overwrite: F' -H "Destination: $ov_dst" "$ov_src")
+ov_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time "$MAX_TIME" --user einstein:test-password -X MOVE -H 'Overwrite: F' -H "Destination: $ov_dst" "$ov_src")
 [[ "$ov_status" == 412 ]] || { echo "MOVE Overwrite:F returned $ov_status, expected 412" >&2; exit 1; }
-ov_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 --user einstein:test-password -X COPY -H 'Overwrite: F' -H "Destination: $ov_dst" "$ov_src")
+ov_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time "$MAX_TIME" --user einstein:test-password -X COPY -H 'Overwrite: F' -H "Destination: $ov_dst" "$ov_src")
 [[ "$ov_status" == 412 ]] || { echo "COPY Overwrite:F returned $ov_status, expected 412" >&2; exit 1; }
 echo "Overwrite: F (MOVE/COPY) OK"
 expect_status 204 --user einstein:test-password -X DELETE "$ov_src"
 expect_status 204 --user einstein:test-password -X DELETE "$ov_dst"
 
 # malformed LOCK XML must not crash revad
-badlock_status=$(curl -sS -o /tmp/badlock-response -w '%{http_code}' --max-time 10 --user einstein:test-password -X LOCK -H 'Content-Type: application/xml' --data-binary '<D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/>' "$DAV_URL/malformed-lock-$test_id.txt" || echo 000)
+badlock_status=$(curl -sS -o /tmp/badlock-response -w '%{http_code}' --max-time "$MAX_TIME" --user einstein:test-password -X LOCK -H 'Content-Type: application/xml' --data-binary '<D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/>' "$DAV_URL/malformed-lock-$test_id.txt" || echo 000)
 echo "malformed LOCK returned HTTP $badlock_status"
 [[ "$badlock_status" =~ ^4[0-9][0-9]$ ]] || {
   echo "malformed LOCK XML returned unexpected HTTP $badlock_status" >&2
@@ -910,6 +933,7 @@ echo "malformed LOCK returned HTTP $badlock_status"
 }
 kill -0 "$revad_pid" || { echo "revad crashed on malformed LOCK XML" >&2; exit 1; }
 
+if [[ "$SKIP_ENV_SETUP" != "1" ]]; then
 sed 's|loginfilter = "(uid={{login}})"|loginfilter = "(uid=disabled-{{login}})"|' \
   "$runtime_config" >/tmp/revad-config-changed.toml
 grep -q 'loginfilter = "(uid=disabled-{{login}})"' /tmp/revad-config-changed.toml || {
@@ -926,6 +950,7 @@ mv /tmp/revad-config-restored.toml "$runtime_config"
 restart_revad
 expect_status 207 --user einstein:test-password \
   -X PROPFIND -H 'Depth: 0' "$DAV_URL/"
+fi
 
 expect_status 200 "$METRICS_URL"
 grep -q '^go_goroutines ' /tmp/dav-response || {
@@ -956,7 +981,7 @@ if (( SOAK_SECONDS > 0 )); then
   echo "Starting $SOAK_SECONDS-second WebDAV soak test"
   for ((elapsed = 0; elapsed < SOAK_SECONDS; elapsed++)); do
     soak_status=$(curl -sS -o /tmp/soak-response -w '%{http_code}' \
-      --max-time 10 --user einstein:test-password "$editor_owner_path")
+      --max-time "$MAX_TIME" --user einstein:test-password "$editor_owner_path")
     [[ "$soak_status" == 200 ]] || {
       echo "soak request at ${elapsed}s returned HTTP $soak_status, expected 200" >&2
       cat /tmp/soak-response >&2
@@ -972,6 +997,7 @@ fi
 
 expect_status 204 --user einstein:test-password -X DELETE "$editor_owner_path"
 
+if [[ "$SKIP_ENV_SETUP" != "1" ]]; then
 kill "$slapd_pid"
 wait "$slapd_pid" || true
 slapd_pid=""
@@ -999,4 +1025,5 @@ done
 expect_status 207 --user einstein:test-password \
   -X PROPFIND -H 'Depth: 0' "$DAV_URL/"
 
+fi
 echo "ARMv7 Bookworm LDAP/LDAPS, WebDAV edge cases, PROPPATCH, concurrency, and share tests passed"
