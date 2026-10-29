@@ -320,11 +320,12 @@ func (am *mgr) getOAuthCtx(ctx context.Context) context.Context {
 	}
 
 	// Sometimes for testing we need to skip the TLS check, that's why we need a
-	// custom HTTP client.
+	// custom HTTP client. The go-oidc library only honours a *http.Client stored
+	// under oauth2.HTTPClient, so hand it the wrapped native client.
 	customHTTPClient := httpclient.New(
 		httpclient.Timeout(time.Second*10),
 		httpclient.RoundTripper(tr),
 	)
-	ctx = context.WithValue(ctx, oauth2.HTTPClient, customHTTPClient)
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, customHTTPClient.GetNativeHTTP())
 	return ctx
 }
