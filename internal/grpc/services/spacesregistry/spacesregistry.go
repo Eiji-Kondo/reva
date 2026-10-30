@@ -382,6 +382,9 @@ func (s *service) decorateProject(ctx context.Context, proj *provider.StorageSpa
 	}
 
 	proj.Mtime = resourceInfo.Mtime
+	// the graph drive root needs id and eTag, expose them via RootInfo
+	proj.RootInfo.Id = resourceInfo.Id
+	proj.RootInfo.Etag = resourceInfo.Etag
 	return nil
 }
 
@@ -424,8 +427,13 @@ func (s *service) userSpace(ctx context.Context, user *userpb.User) (*provider.S
 		Name:      user.Username,
 		SpaceType: spaces.SpaceTypeHome.AsString(),
 		RootInfo: &provider.ResourceInfo{
+			Id:            stat.Info.Id,
+			Name:          stat.Info.Name,
+			Type:          provider.ResourceType_RESOURCE_TYPE_CONTAINER,
 			PermissionSet: permissions.NewManagerRole().CS3ResourcePermissions(),
 			Path:          home,
+			Mtime:         stat.Info.Mtime,
+			Etag:          stat.Info.Etag,
 		},
 		Quota: &provider.Quota{
 			QuotaMaxBytes:  quota.TotalBytes,

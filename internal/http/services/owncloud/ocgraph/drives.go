@@ -180,6 +180,17 @@ func (s *svc) cs3StorageSpaceToDrive(ctx context.Context, user *userpb.User, spa
 
 	drive.Root = &libregraph.DriveItem{}
 
+	// the root drive item is identified by the space id, like oCIS does
+	if space.Id != nil {
+		drive.Root.Id = libregraph.PtrString(space.Id.OpaqueId)
+	}
+	if space.RootInfo != nil && space.RootInfo.Etag != "" {
+		drive.Root.ETag = libregraph.PtrString(space.RootInfo.Etag)
+	}
+	if space.RootInfo != nil && space.RootInfo.Mtime != nil {
+		drive.Root.LastModifiedDateTime = libregraph.PtrTime(time.Unix(int64(space.RootInfo.Mtime.Seconds), int64(space.RootInfo.Mtime.Nanos)))
+	}
+
 	if space.ReadmeId != "" || space.ThumbnailId != "" {
 		gw, err := s.getClient()
 		// If an error occurs, we just don't set the readme / thumbnail
@@ -223,10 +234,9 @@ func (s *svc) cs3StorageSpaceToDrive(ctx context.Context, user *userpb.User, spa
 	}
 
 	if space.SpaceType != "personal" {
-		drive.Root = &libregraph.DriveItem{
-			Id:          libregraph.PtrString(space.Id.OpaqueId),
-			Permissions: cs3PermissionsToLibreGraph(user, space.RootInfo.PermissionSet),
-		}
+		// share/project spaces identify the root by the storage space id, keep the
+		// id/eTag already derived from RootInfo and only add the permission set
+		drive.Root.Permissions = cs3PermissionsToLibreGraph(user, space.RootInfo.PermissionSet)
 	}
 
 	drive.Root.WebDavUrl = libregraph.PtrString(fullURL(s.c.WebDavBase, space.RootInfo.Path))
