@@ -239,8 +239,15 @@ func (s *svc) cs3StorageSpaceToDrive(ctx context.Context, user *userpb.User, spa
 		drive.Root.Permissions = cs3PermissionsToLibreGraph(user, space.RootInfo.PermissionSet)
 	}
 
-	drive.Root.WebDavUrl = libregraph.PtrString(fullURL(s.c.WebDavBase, space.RootInfo.Path))
-	drive.WebUrl = libregraph.PtrString(fullURL(s.c.WebBase, space.RootInfo.Path))
+	// space DAV URLs are keyed by the space id, not the space path (see ocdav
+	// davHandler); the id contains '$'/'=' which url.JoinPath leaves untouched,
+	// matching the URLs the desktop client expects
+	spaceDavID := space.RootInfo.Path
+	if space.Id != nil {
+		spaceDavID = space.Id.OpaqueId
+	}
+	drive.Root.WebDavUrl = libregraph.PtrString(fullURL(s.c.WebDavBase, spaceDavID))
+	drive.WebUrl = libregraph.PtrString(fullURL(s.c.WebBase, spaceDavID))
 
 	if space.Owner != nil && space.Owner.Id != nil {
 		drive.Owner = &libregraph.IdentitySet{
