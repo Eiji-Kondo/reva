@@ -24,6 +24,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"strings"
 
 	gateway "github.com/cs3org/go-cs3apis/cs3/gateway/v1beta1"
 	"github.com/cs3org/reva/v3/pkg/rgrpc/todo/pool"
@@ -43,6 +44,7 @@ type config struct {
 	WebDavBase                 string `mapstructure:"webdav_base"`
 	WebBase                    string `mapstructure:"web_base"`
 	BaseURL                    string `mapstructure:"base_url"    validate:"required"`
+	ShareFolder                string `mapstructure:"share_folder"`
 	PubRWLinkMaxExpiration     int64  `mapstructure:"pub_rw_link_max_expiration"`
 	PubRWLinkDefaultExpiration int64  `mapstructure:"pub_rw_link_default_expiration"`
 }
@@ -57,6 +59,13 @@ func (c *config) ApplyDefaults() {
 	if c.WebDavBase == "" {
 		c.WebDavBase, _ = url.JoinPath(c.BaseURL, "/remote.php/dav/spaces")
 	}
+
+	// must match the gateway/storageprovider share_folder: received shares are
+	// mounted there, not at the physical location localfs reports for them
+	if c.ShareFolder == "" {
+		c.ShareFolder = "MyShares"
+	}
+	c.ShareFolder = strings.Trim(c.ShareFolder, "/")
 }
 
 // ListResponse is used for proper marshalling of Graph list responses

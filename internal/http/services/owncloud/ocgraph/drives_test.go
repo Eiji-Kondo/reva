@@ -4,7 +4,9 @@ import (
 	"context"
 	"testing"
 
+	gateway "github.com/cs3org/go-cs3apis/cs3/gateway/v1beta1"
 	userpb "github.com/cs3org/go-cs3apis/cs3/identity/user/v1beta1"
+	collaboration "github.com/cs3org/go-cs3apis/cs3/sharing/collaboration/v1beta1"
 	provider "github.com/cs3org/go-cs3apis/cs3/storage/provider/v1beta1"
 	types "github.com/cs3org/go-cs3apis/cs3/types/v1beta1"
 )
@@ -49,5 +51,48 @@ func TestCs3StorageSpaceToDriveRootIdentityAndURLs(t *testing.T) {
 	}
 	if got := drive.GetWebUrl(); got != "https://cloud.home.lan/files/spaces/"+spaceID {
 		t.Errorf("drive.WebUrl = %q", got)
+	}
+}
+
+func TestConvertShareToSpaceUsesShareFolderURLs(t *testing.T) {
+	const (
+		recipientSpaceID = "localfs$F5WG6Y3BNRTHG==="
+		storageID        = "localfs"
+	)
+
+	s := &svc{c: &config{
+		WebDavBase:  "https://cloud.home.lan/remote.php/dav/spaces",
+		WebBase:     "https://cloud.home.lan/files/spaces",
+		ShareFolder: "MyShares",
+	}}
+
+	// localfs reports the physical location (/.reva-shared/...) for a received
+	// share; the recipient actually reaches it under <own space>/MyShares/<name>.
+	rsi := &gateway.ReceivedShareResourceInfo{
+		ResourceInfo: &provider.ResourceInfo{
+			Id: &provider.ResourceId{
+				StorageId: storageID,
+				SpaceId:   "F5WG6Y3BNRTHG===",
+				OpaqueId:  "fileid-einstein/mp-doc",
+			},
+			Path: "/localfs/.reva-shared/einstein/mp-doc",
+			Etag: "abc123",
+			Mtime: &types.Timestamp{
+				Seconds: 1700000000,
+			},
+		},
+		ReceivedShare: &collaboration.ReceivedShare{
+			Share: &collaboration.Share{Id: &collaboration.ShareId{OpaqueId: "3"}},
+		},
+	}
+
+	drive := s.convertShareToSpace(rsi)
+	wantDav := "https://cloud.home.lan/remote.php/dav/spaces/" + recipientSpaceID + "/MyShares/mp-doc"
+	if got := drive.Root.GetWebDavUrl(); got != wantDav {
+		t.Errorf("drive.Root.WebDavUrl = %q, want %q", got, wantDav)
+	}
+	wantWeb := "https://cloud.home.lan/files/spaces/" + recipientSpaceID + "/MyShares/mp-doc"
+	if got := drive.GetWebUrl(); got != wantWeb {
+		t.Errorf("drive.WebUrl = %q, want %q", got, wantWeb)
 	}
 }

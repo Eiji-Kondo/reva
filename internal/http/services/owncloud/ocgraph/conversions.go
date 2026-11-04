@@ -633,12 +633,23 @@ func (s *svc) convertShareToSpace(rsi *gateway.ReceivedShareResourceInfo) *libre
 	driveAlias := strings.TrimPrefix(spacePath, "/")
 	resourceRelativePath, _ := spaces.PathRelativeToSpaceRoot(rsi.ResourceInfo)
 
+	// The recipient reaches a received share at <own space>/<share folder>/<name>,
+	// not at the physical location the storage provider reports for it (localfs
+	// keeps them under /.reva-shared). Build the DAV/web URLs from the recipient's
+	// space id and the share folder, otherwise ocdav cannot resolve them.
+	shareName := filepath.Base(rsi.ResourceInfo.Path)
+	shareDavPath := rsi.ResourceInfo.Path
+	if rsi.ResourceInfo.Id.SpaceId != "" && shareName != "" && shareName != "." && shareName != "/" {
+		spaceID := spaces.EncodeStorageSpaceID(rsi.ResourceInfo.Id.StorageId, rsi.ResourceInfo.Id.SpaceId)
+		shareDavPath = spaceID + "/" + path.Join(s.c.ShareFolder, shareName)
+	}
+
 	drive := &libregraph.Drive{
 		Id:         libregraph.PtrString(libregraphShareID(rsi.ReceivedShare.Share.Id)),
 		DriveType:  libregraph.PtrString("mountpoint"),
 		DriveAlias: libregraph.PtrString(rsi.ReceivedShare.Share.Id.OpaqueId), // this is not used, but must not be the same alias as the drive item
 		Name:       filepath.Base(rsi.ResourceInfo.Path),
-		WebUrl:     libregraph.PtrString(fullURL(s.c.WebBase, rsi.ResourceInfo.Path)),
+		WebUrl:     libregraph.PtrString(fullURL(s.c.WebBase, shareDavPath)),
 		Quota: &libregraph.Quota{
 			Total:     libregraph.PtrInt64(24154390300000),
 			Used:      libregraph.PtrInt64(3141592),
@@ -646,7 +657,7 @@ func (s *svc) convertShareToSpace(rsi *gateway.ReceivedShareResourceInfo) *libre
 		},
 		Root: &libregraph.DriveItem{
 			Id:        libregraph.PtrString(fmt.Sprintf("%s$%s!%s", ShareJailID, ShareJailID, rsi.ReceivedShare.Share.Id.OpaqueId)),
-			WebDavUrl: libregraph.PtrString(fullURL(s.c.WebDavBase, rsi.ResourceInfo.Path)),
+			WebDavUrl: libregraph.PtrString(fullURL(s.c.WebDavBase, shareDavPath)),
 			RemoteItem: &libregraph.RemoteItem{
 				DriveAlias: nil,
 				ETag:       libregraph.PtrString(rsi.ResourceInfo.Etag),
