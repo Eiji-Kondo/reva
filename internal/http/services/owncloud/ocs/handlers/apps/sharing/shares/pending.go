@@ -19,12 +19,15 @@
 package shares
 
 import (
+	"context"
 	"net/http"
 	"path"
 
+	gateway "github.com/cs3org/go-cs3apis/cs3/gateway/v1beta1"
 	rpc "github.com/cs3org/go-cs3apis/cs3/rpc/v1beta1"
 	collaboration "github.com/cs3org/go-cs3apis/cs3/sharing/collaboration/v1beta1"
 	ocmv1beta1 "github.com/cs3org/go-cs3apis/cs3/sharing/ocm/v1beta1"
+	provider "github.com/cs3org/go-cs3apis/cs3/storage/provider/v1beta1"
 	"github.com/cs3org/reva/v3/internal/http/services/owncloud/ocs/conversions"
 	"github.com/cs3org/reva/v3/internal/http/services/owncloud/ocs/response"
 	"github.com/cs3org/reva/v3/pkg/appctx"
@@ -64,9 +67,21 @@ func (h *Handler) updateReceivedShare(w http.ResponseWriter, r *http.Request, sh
 		return
 	}
 
+	// The gateway needs the resource id to manage the storage reference in the
+	// recipient's home (commit_share_to_storage_ref). Only the share id is known
+	// here, so look the received share up first.
+	resourceID, err := h.getReceivedShareResourceID(ctx, client, shareID)
+	if err != nil {
+		response.WriteOCSError(w, r, response.MetaServerError.StatusCode, "grpc get received share request failed", err)
+		return
+	}
+
 	shareRequest := &collaboration.UpdateReceivedShareRequest{
 		Share: &collaboration.ReceivedShare{
-			Share: &collaboration.Share{Id: &collaboration.ShareId{OpaqueId: shareID}},
+			Share: &collaboration.Share{
+				Id:         &collaboration.ShareId{OpaqueId: shareID},
+				ResourceId: resourceID,
+			},
 		},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"state"}},
 	}
@@ -117,6 +132,32 @@ func (h *Handler) updateReceivedShare(w http.ResponseWriter, r *http.Request, sh
 	}
 
 	response.WriteOCSSuccess(w, r, []*conversions.ShareData{data})
+}
+
+// getReceivedShareResourceID resolves a received share id to the id of the
+// shared resource. The OCS accept/reject endpoints only receive the share id,
+// but the gateway's storage-reference handling needs the resource id.
+func (h *Handler) getReceivedShareResourceID(ctx context.Context, client gateway.GatewayAPIClient, shareID string) (*provider.ResourceId, error) {
+	res, err := client.GetReceivedShare(ctx, &collaboration.GetReceivedShareRequest{
+		Ref: &collaboration.ShareReference{
+			Spec: &collaboration.ShareReference_Id{
+				Id: &collaboration.ShareId{OpaqueId: shareID},
+			},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if res.Status.Code != rpc.Code_CODE_OK {
+		if res.Status.Code == rpc.Code_CODE_NOT_FOUND {
+			return nil, errors.New("received share not found")
+		}
+		return nil, errors.Errorf("code: %d, message: %s", res.Status.Code, res.Status.Message)
+	}
+	if res.GetShare().GetShare().GetResourceId() == nil {
+		return nil, errors.New("received share has no resource id")
+	}
+	return res.GetShare().GetShare().GetResourceId(), nil
 }
 
 func (h *Handler) updateReceivedFederatedShare(w http.ResponseWriter, r *http.Request, shareID string, rejectShare bool) {
