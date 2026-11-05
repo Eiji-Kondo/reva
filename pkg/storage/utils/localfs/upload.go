@@ -94,7 +94,7 @@ func (fs *localfs) InitiateUpload(ctx context.Context, ref *provider.Reference, 
 		return nil, errors.Wrap(err, "localfs: error resolving reference")
 	}
 	if fs.isShareFolderChild(ctx, np) {
-		np, err = fs.resolveShareReference(ctx, np, true)
+		np, err = fs.shareWriteTarget(ctx, np)
 		if err != nil {
 			return nil, err
 		}

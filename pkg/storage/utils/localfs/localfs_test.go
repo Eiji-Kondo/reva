@@ -415,6 +415,94 @@ func TestSharedFolderReferenceIsListable(t *testing.T) {
 	}
 }
 
+// TestWriteThroughSharedFolderReference pins the write path into a received
+// folder share: a recipient's PUT (TouchFile), MKCOL (CreateDir), DELETE and
+// Move of an item inside the share must land in the sharer's physical folder
+// (the share target), not in the reference directory. Before the fix these
+// resolved the full child path against the reference table and failed with
+// "no rows in result set" (HTTP 500).
+func TestWriteThroughSharedFolderReference(t *testing.T) {
+	config := &Config{Root: t.TempDir(), UserLayout: "{{.Username}}", ShareFolder: "/MyShares"}
+	config.ApplyDefaults()
+	db, err := initializeDB(config.Root, "test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	fs := &localfs{conf: config, db: db}
+
+	marieID := &userpb.UserId{OpaqueId: "marie", Idp: "https://idp.example.test", Type: userpb.UserType_USER_TYPE_PRIMARY}
+	ctx := appctx.ContextSetUser(context.Background(), &userpb.User{
+		Id:       marieID,
+		Username: "marie",
+	})
+
+	ownerDir := path.Join(config.DataDirectory, "einstein", "sf")
+	if err := os.MkdirAll(ownerDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path.Join(ownerDir, "orig.txt"), []byte("orig"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Read/write grant (no delete) so marie may create and modify.
+	grantee := "u:marie:primary@https://idp.example.test"
+	if err := fs.addToACLDB(ctx, ownerDir, grantee, "rwx"); err != nil {
+		t.Fatal(err)
+	}
+
+	resourceID := &provider.ResourceId{OpaqueId: "fileid-" + url.QueryEscape("einstein/sf")}
+	shareTarget := &url.URL{Scheme: "cs3", Opaque: "localfs/" + resourceID.GetOpaqueId()}
+	if err := fs.CreateReference(ctx, "/MyShares/sf", shareTarget); err != nil {
+		t.Fatalf("create share reference: %v", err)
+	}
+
+	// MKCOL /MyShares/sf/sub -> must create einstein/sf/sub.
+	if err := fs.CreateDir(ctx, &provider.Reference{Path: "/MyShares/sf/sub"}); err != nil {
+		t.Fatalf("CreateDir inside share: %v", err)
+	}
+	if _, err := os.Stat(path.Join(ownerDir, "sub")); err != nil {
+		t.Fatalf("sub was not created in the shared target: %v", err)
+	}
+
+	// TouchFile /MyShares/sf/from-marie.txt -> must create the file in the target.
+	if err := fs.TouchFile(ctx, &provider.Reference{Path: "/MyShares/sf/from-marie.txt"}); err != nil {
+		t.Fatalf("TouchFile inside share: %v", err)
+	}
+	if _, err := os.Stat(path.Join(ownerDir, "from-marie.txt")); err != nil {
+		t.Fatalf("file was not created in the shared target: %v", err)
+	}
+
+	// The reference directory must not have received the writes.
+	refDir := path.Join(config.References, "marie", "/MyShares/sf")
+	if _, err := os.Stat(path.Join(refDir, "from-marie.txt")); err == nil {
+		t.Fatalf("write leaked into the reference directory %s", refDir)
+	}
+
+	// Move /MyShares/sf/from-marie.txt -> /MyShares/sf/sub/moved.txt.
+	if err := fs.Move(ctx,
+		&provider.Reference{Path: "/MyShares/sf/from-marie.txt"},
+		&provider.Reference{Path: "/MyShares/sf/sub/moved.txt"}); err != nil {
+		t.Fatalf("Move inside share: %v", err)
+	}
+	if _, err := os.Stat(path.Join(ownerDir, "sub", "moved.txt")); err != nil {
+		t.Fatalf("moved file not present in the shared target: %v", err)
+	}
+
+	// Delete /MyShares/sf/sub -> must remove it from the target, not the reference.
+	if err := fs.Delete(ctx, &provider.Reference{Path: "/MyShares/sf/sub"}); err != nil {
+		t.Fatalf("Delete inside share: %v", err)
+	}
+	if _, err := os.Stat(path.Join(ownerDir, "sub")); !os.IsNotExist(err) {
+		t.Fatalf("sub still present in the shared target after delete: %v", err)
+	}
+
+	// The share reference itself must survive a child delete.
+	if _, err := os.Stat(path.Join(config.References, "marie", "/MyShares/sf")); err != nil {
+		t.Fatalf("share reference disappeared after a child delete: %v", err)
+	}
+}
+
 func TestGetPathByIDKeepsUserHomeAndRejectsPrivatePaths(t *testing.T) {
 	config := &Config{Root: t.TempDir(), UserLayout: "{{.Username}}"}
 	config.ApplyDefaults()

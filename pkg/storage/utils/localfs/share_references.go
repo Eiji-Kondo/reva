@@ -134,6 +134,21 @@ func (fs *localfs) resolveShareReferenceChild(ctx context.Context, sharePath, ch
 	return path.Join(foreignPath, child), nil
 }
 
+// shareWriteTarget maps a virtual path inside the share folder to the physical
+// path of the shared resource it points at, so writes reach the actual target
+// instead of the reference directory. The reference is stored on the direct
+// child of the share folder, so "/MyShares/sf/sub/deep.txt" is resolved by
+// looking up "/MyShares/sf" and appending "sub/deep.txt". The share grant is
+// checked for write access.
+func (fs *localfs) shareWriteTarget(ctx context.Context, p string) (string, error) {
+	sharePath, child := fs.splitShareFolderChild(ctx, p)
+	foreignPath, err := fs.resolveShareReference(ctx, sharePath, true)
+	if err != nil {
+		return "", err
+	}
+	return path.Join(foreignPath, child), nil
+}
+
 func (fs *localfs) isForeignDataPath(ctx context.Context, resourcePath string) (bool, error) {
 	if fs.conf.DisableHome || resourcePath == "" {
 		return false, nil

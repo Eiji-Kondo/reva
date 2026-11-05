@@ -735,7 +735,15 @@ func (fs *localfs) SetArbitraryMetadata(ctx context.Context, ref *provider.Refer
 	}
 
 	if fs.isShareFolderChild(ctx, np) {
-		np = fs.wrapReferences(ctx, np)
+		if _, child := fs.splitShareFolderChild(ctx, np); child == "" {
+			np = fs.wrapReferences(ctx, np)
+		} else {
+			target, err := fs.shareWriteTarget(ctx, np)
+			if err != nil {
+				return err
+			}
+			np = fs.wrap(ctx, target)
+		}
 	} else {
 		np = fs.wrap(ctx, np)
 	}
@@ -821,7 +829,15 @@ func (fs *localfs) UnsetArbitraryMetadata(ctx context.Context, ref *provider.Ref
 	}
 
 	if fs.isShareFolderChild(ctx, np) {
-		np = fs.wrapReferences(ctx, np)
+		if _, child := fs.splitShareFolderChild(ctx, np); child == "" {
+			np = fs.wrapReferences(ctx, np)
+		} else {
+			target, err := fs.shareWriteTarget(ctx, np)
+			if err != nil {
+				return err
+			}
+			np = fs.wrap(ctx, target)
+		}
 	} else {
 		np = fs.wrap(ctx, np)
 	}
@@ -915,23 +931,33 @@ func (fs *localfs) CreateDir(ctx context.Context, ref *provider.Reference) error
 		return nil
 	}
 
-	if fs.isShareFolder(ctx, fn) {
+	if fs.isShareFolderRoot(ctx, fn) {
 		return errtypes.PermissionDenied("localfs: cannot create folder under the share folder")
 	}
 
-	fn = fs.wrap(ctx, fn)
-	if _, err := os.Stat(fn); err == nil {
+	var fp string
+	if fs.isShareFolderChild(ctx, fn) {
+		target, err := fs.shareWriteTarget(ctx, fn)
+		if err != nil {
+			return err
+		}
+		fp = fs.wrap(ctx, target)
+	} else {
+		fp = fs.wrap(ctx, fn)
+	}
+
+	if _, err := os.Stat(fp); err == nil {
 		return errtypes.AlreadyExists(fn)
 	}
-	err = os.Mkdir(fn, 0700)
+	err = os.Mkdir(fp, 0700)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return errtypes.NotFound(fn)
 		}
-		return errors.Wrap(err, "localfs: error creating dir "+fn)
+		return errors.Wrap(err, "localfs: error creating dir "+fp)
 	}
 
-	return fs.propagate(ctx, path.Dir(fn))
+	return fs.propagate(ctx, path.Dir(fp))
 }
 
 // TouchFile as defined in the storage.FS interface.
@@ -941,11 +967,20 @@ func (fs *localfs) TouchFile(ctx context.Context, ref *provider.Reference) error
 		return errors.Wrap(err, "localfs: error resolving ref")
 	}
 
-	if fs.isShareFolder(ctx, fn) {
+	if fs.isShareFolderRoot(ctx, fn) {
 		return errtypes.PermissionDenied("localfs: cannot create file under the share folder")
 	}
 
-	fp := fs.wrap(ctx, fn)
+	var fp string
+	if fs.isShareFolderChild(ctx, fn) {
+		target, err := fs.shareWriteTarget(ctx, fn)
+		if err != nil {
+			return err
+		}
+		fp = fs.wrap(ctx, target)
+	} else {
+		fp = fs.wrap(ctx, fn)
+	}
 	if _, err := os.Stat(fp); err == nil {
 		return errtypes.AlreadyExists(fn)
 	}
@@ -984,7 +1019,17 @@ func (fs *localfs) Delete(ctx context.Context, ref *provider.Reference) error {
 
 	var fp string
 	if fs.isShareFolderChild(ctx, fn) {
-		fp = fs.wrapReferences(ctx, fn)
+		if _, child := fs.splitShareFolderChild(ctx, fn); child == "" {
+			// Deleting the share folder entry itself removes the reference
+			// (unshare) rather than the shared resource.
+			fp = fs.wrapReferences(ctx, fn)
+		} else {
+			target, err := fs.shareWriteTarget(ctx, fn)
+			if err != nil {
+				return err
+			}
+			fp = fs.wrap(ctx, target)
+		}
 	} else {
 		fp = fs.wrap(ctx, fn)
 	}
@@ -998,7 +1043,11 @@ func (fs *localfs) Delete(ctx context.Context, ref *provider.Reference) error {
 	}
 
 	key := fmt.Sprintf("%s.d%d", path.Base(fn), time.Now().UnixNano()/int64(time.Millisecond))
-	if err := os.Rename(fp, fs.wrapRecycleBin(ctx, key)); err != nil {
+	recyclePath := fs.wrapRecycleBin(ctx, key)
+	if err := os.MkdirAll(path.Dir(recyclePath), 0700); err != nil {
+		return errors.Wrap(err, "localfs: error creating recycle bin dir")
+	}
+	if err := os.Rename(fp, recyclePath); err != nil {
 		return errors.Wrap(err, "localfs: could not delete item")
 	}
 
@@ -1024,11 +1073,36 @@ func (fs *localfs) Move(ctx context.Context, oldRef, newRef *provider.Reference)
 	}
 
 	if fs.isShareFolder(ctx, oldName) || fs.isShareFolder(ctx, newName) {
-		return fs.moveReferences(ctx, oldName, newName)
+		oldShareChild, newShareChild := false, false
+		if fs.isShareFolderChild(ctx, oldName) {
+			if _, c := fs.splitShareFolderChild(ctx, oldName); c != "" {
+				oldShareChild = true
+			}
+		}
+		if fs.isShareFolderChild(ctx, newName) {
+			if _, c := fs.splitShareFolderChild(ctx, newName); c != "" {
+				newShareChild = true
+			}
+		}
+		if !oldShareChild || !newShareChild {
+			// Renaming/moving the reference entry itself, or moving into or out
+			// of the share folder: only reference renames are supported.
+			return fs.moveReferences(ctx, oldName, newName)
+		}
+		oldTarget, err := fs.shareWriteTarget(ctx, oldName)
+		if err != nil {
+			return err
+		}
+		newTarget, err := fs.shareWriteTarget(ctx, newName)
+		if err != nil {
+			return err
+		}
+		oldName = fs.wrap(ctx, oldTarget)
+		newName = fs.wrap(ctx, newTarget)
+	} else {
+		oldName = fs.wrap(ctx, oldName)
+		newName = fs.wrap(ctx, newName)
 	}
-
-	oldName = fs.wrap(ctx, oldName)
-	newName = fs.wrap(ctx, newName)
 
 	if err := os.Rename(oldName, newName); err != nil {
 		log.Error().Err(err).Msg("localfs: error moving " + oldName + " to " + newName)
@@ -1576,10 +1650,18 @@ func (fs *localfs) UpdateStorageSpace(ctx context.Context, req *provider.UpdateS
 
 func (fs *localfs) propagate(ctx context.Context, leafPath string) error {
 	var root string
-	if fs.isShareFolderChild(ctx, leafPath) || strings.HasSuffix(path.Clean(leafPath), fs.conf.ShareFolder) {
+	switch {
+	case fs.isShareFolderChild(ctx, leafPath) || strings.HasSuffix(path.Clean(leafPath), fs.conf.ShareFolder):
 		root = fs.wrapReferences(ctx, "/")
-	} else {
-		root = fs.wrap(ctx, "/")
+	default:
+		// A write through a received share lands in another user's data
+		// directory, so walk up from the data root rather than the current
+		// user's home.
+		if foreign, err := fs.isForeignDataPath(ctx, leafPath); err == nil && foreign {
+			root = fs.conf.DataDirectory
+		} else {
+			root = fs.wrap(ctx, "/")
+		}
 	}
 
 	if !strings.HasPrefix(leafPath, root) {
