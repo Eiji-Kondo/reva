@@ -35,7 +35,7 @@ func (fs *localfs) lockResourcePath(ctx context.Context, ref *provider.Reference
 		return "", err
 	}
 	if fs.isShareFolderChild(ctx, resourcePath) {
-		resourcePath, err = fs.resolveShareReference(ctx, resourcePath, true)
+		resourcePath, err = fs.shareWriteTarget(ctx, resourcePath)
 		if err != nil {
 			return "", err
 		}
