@@ -345,6 +345,76 @@ func TestSharedResourcePathUsesShareACL(t *testing.T) {
 	}
 }
 
+// TestSharedFolderReferenceIsListable pins the fix for the "received share
+// folder shows as a file" bug: a reference that points at a directory must stat
+// as a CONTAINER, and its children must be listable/stat-able through the share
+// folder path.
+func TestSharedFolderReferenceIsListable(t *testing.T) {
+	config := &Config{Root: t.TempDir(), UserLayout: "{{.Username}}", ShareFolder: "/MyShares"}
+	config.ApplyDefaults()
+	db, err := initializeDB(config.Root, "test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	fs := &localfs{conf: config, db: db}
+
+	marieID := &userpb.UserId{OpaqueId: "marie", Idp: "https://idp.example.test", Type: userpb.UserType_USER_TYPE_PRIMARY}
+	ctx := appctx.ContextSetUser(context.Background(), &userpb.User{
+		Id:       marieID,
+		Username: "marie",
+	})
+
+	// einstein owns a folder with a child file.
+	ownerDir := path.Join(config.DataDirectory, "einstein", "sf")
+	if err := os.MkdirAll(ownerDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path.Join(ownerDir, "hello.txt"), []byte("hi"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Grant marie read (r) + list (x) so she can stat and list the share.
+	grantee := "u:marie:primary@https://idp.example.test"
+	if err := fs.addToACLDB(ctx, ownerDir, grantee, "rx"); err != nil {
+		t.Fatal(err)
+	}
+
+	resourceID := &provider.ResourceId{OpaqueId: "fileid-" + url.QueryEscape("einstein/sf")}
+	shareTarget := &url.URL{Scheme: "cs3", Opaque: "localfs/" + resourceID.GetOpaqueId()}
+	if err := fs.CreateReference(ctx, "/MyShares/sf", shareTarget); err != nil {
+		t.Fatalf("create share reference: %v", err)
+	}
+
+	// The received folder must stat as a CONTAINER (not a file/reference).
+	info, err := fs.GetMD(ctx, &provider.Reference{Path: "/MyShares/sf"}, nil)
+	if err != nil {
+		t.Fatalf("stat share reference: %v", err)
+	}
+	if info.Type != provider.ResourceType_RESOURCE_TYPE_CONTAINER {
+		t.Fatalf("share folder type = %v, want CONTAINER", info.Type)
+	}
+
+	// Its children must be listable, and a child must stat as a FILE.
+	children, err := fs.ListFolder(ctx, &provider.Reference{Path: "/MyShares/sf"}, nil)
+	if err != nil {
+		t.Fatalf("list share folder: %v", err)
+	}
+	if len(children) != 1 || children[0].Path != "/MyShares/sf/hello.txt" {
+		t.Fatalf("children = %+v, want one entry at /MyShares/sf/hello.txt", children)
+	}
+	if children[0].Type != provider.ResourceType_RESOURCE_TYPE_FILE {
+		t.Fatalf("child type = %v, want FILE", children[0].Type)
+	}
+	childInfo, err := fs.GetMD(ctx, &provider.Reference{Path: "/MyShares/sf/hello.txt"}, nil)
+	if err != nil {
+		t.Fatalf("stat share child: %v", err)
+	}
+	if childInfo.Type != provider.ResourceType_RESOURCE_TYPE_FILE {
+		t.Fatalf("child type = %v, want FILE", childInfo.Type)
+	}
+}
+
 func TestGetPathByIDKeepsUserHomeAndRejectsPrivatePaths(t *testing.T) {
 	config := &Config{Root: t.TempDir(), UserLayout: "{{.Username}}"}
 	config.ApplyDefaults()

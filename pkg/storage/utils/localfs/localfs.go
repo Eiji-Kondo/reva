@@ -371,6 +371,22 @@ func (fs *localfs) isShareFolderChild(ctx context.Context, p string) bool {
 	return len(vals) > 1 && vals[1] != ""
 }
 
+// splitShareFolderChild splits a share folder path into the reference path
+// (the direct child of the share folder, where the reference is stored) and the
+// optional relative path inside the shared resource. For "/MyShares/sf/sub" it
+// returns ("/MyShares/sf", "sub"); for "/MyShares/sf" it returns
+// ("/MyShares/sf", "").
+func (fs *localfs) splitShareFolderChild(ctx context.Context, p string) (sharePath, child string) {
+	p = path.Clean(p)
+	rest := strings.TrimPrefix(p, fs.conf.ShareFolder+"/")
+	parts := strings.SplitN(rest, "/", 2)
+	sharePath = path.Join(fs.conf.ShareFolder, parts[0])
+	if len(parts) == 2 {
+		child = parts[1]
+	}
+	return sharePath, child
+}
+
 // permissionSet returns the permission set for the current user.
 func (fs *localfs) permissionSet(ctx context.Context, owner *userpb.UserId, resourcePath string) (*provider.ResourcePermissions, error) {
 	u, ok := appctx.ContextGetUser(ctx)
@@ -494,7 +510,6 @@ func (fs *localfs) convertToFileReference(ctx context.Context, fi os.FileInfo, f
 	if err != nil {
 		return nil, err
 	}
-	info.Type = provider.ResourceType_RESOURCE_TYPE_REFERENCE
 	target, err := fs.getReferenceEntry(ctx, fn)
 	if err != nil {
 		return nil, err
@@ -510,6 +525,14 @@ func (fs *localfs) convertToFileReference(ctx context.Context, fi os.FileInfo, f
 	targetInfo, err := os.Stat(targetPath)
 	if err != nil {
 		return nil, errors.Wrap(err, "localfs: error stating share reference target")
+	}
+	// Report a reference as CONTAINER when it points at a directory so WebDAV
+	// renders a received folder share as a collection. File shares keep the
+	// REFERENCE type that the app provider and PUT paths rely on.
+	if targetInfo.IsDir() {
+		info.Type = provider.ResourceType_RESOURCE_TYPE_CONTAINER
+	} else {
+		info.Type = provider.ResourceType_RESOURCE_TYPE_REFERENCE
 	}
 	info.Size = uint64(targetInfo.Size())
 	info.Etag = calcEtag(ctx, targetInfo)
@@ -1095,18 +1118,43 @@ func (fs *localfs) GetMD(ctx context.Context, ref *provider.Reference, mdKeys []
 
 func (fs *localfs) getMDShareFolder(ctx context.Context, p string, mdKeys []string) (*provider.ResourceInfo, error) {
 	fn := fs.wrapReferences(ctx, p)
-	md, err := os.Stat(fn)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, errtypes.NotFound(fn)
-		}
-		return nil, errors.Wrap(err, "localfs: error stating "+fn)
-	}
 
 	if fs.isShareFolderRoot(ctx, p) {
+		md, err := os.Stat(fn)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil, errtypes.NotFound(fn)
+			}
+			return nil, errors.Wrap(err, "localfs: error stating "+fn)
+		}
 		return fs.normalize(ctx, md, fn, mdKeys)
 	}
-	return fs.convertToFileReference(ctx, md, fn, mdKeys)
+
+	// A child of the share folder is a reference (or a path inside one). Resolve
+	// it to the shared target so it is reported with the target's real type and
+	// metadata; a folder share must stat as a CONTAINER.
+	sharePath, child := fs.splitShareFolderChild(ctx, p)
+	foreignPath, err := fs.resolveShareReferenceChild(ctx, sharePath, child)
+	if err != nil {
+		return nil, err
+	}
+	targetPath := fs.wrap(ctx, foreignPath)
+	targetInfo, err := os.Stat(targetPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, errtypes.NotFound(p)
+		}
+		return nil, errors.Wrap(err, "localfs: error stating shared resource "+targetPath)
+	}
+	if child == "" {
+		return fs.convertToFileReference(ctx, targetInfo, fn, mdKeys)
+	}
+	info, err := fs.normalize(ctx, targetInfo, targetPath, mdKeys)
+	if err != nil {
+		return nil, err
+	}
+	info.Path = fs.unwrap(ctx, fn)
+	return info, nil
 }
 
 func (fs *localfs) ListFolder(ctx context.Context, ref *provider.Reference, mdKeys []string) ([]*provider.ResourceInfo, error) {
@@ -1141,7 +1189,24 @@ func (fs *localfs) ListFolder(ctx context.Context, ref *provider.Reference, mdKe
 	}
 
 	if fs.isShareFolderChild(ctx, fn) {
-		return nil, errtypes.PermissionDenied("localfs: error listing folders inside the shared folder, only file references are stored inside")
+		// The share folder stores references; listing a path inside a received
+		// folder share means listing the shared target, not the reference dir.
+		sharePath, child := fs.splitShareFolderChild(ctx, fn)
+		foreignPath, err := fs.resolveShareReferenceChild(ctx, sharePath, child)
+		if err != nil {
+			return nil, err
+		}
+		infos, err := fs.listFolder(ctx, foreignPath, mdKeys)
+		if err != nil {
+			return nil, err
+		}
+		// listFolder reports the physical (/.reva-shared) paths; rewrite them to
+		// the virtual share path so WebDAV builds correct child hrefs.
+		baseVirtual := path.Join(sharePath, child)
+		for _, info := range infos {
+			info.Path = path.Join(baseVirtual, strings.TrimPrefix(info.Path, foreignPath))
+		}
+		return infos, nil
 	}
 
 	res, err := fs.listFolder(ctx, fn, mdKeys)
@@ -1232,7 +1297,8 @@ func (fs *localfs) Download(ctx context.Context, ref *provider.Reference, ranges
 		return nil, errtypes.PermissionDenied("localfs: cannot download the virtual share folder")
 	}
 	if fs.isShareFolderChild(ctx, fn) {
-		fn, err = fs.resolveShareReference(ctx, fn, false)
+		sharePath, child := fs.splitShareFolderChild(ctx, fn)
+		fn, err = fs.resolveShareReferenceChild(ctx, sharePath, child)
 		if err != nil {
 			return nil, err
 		}

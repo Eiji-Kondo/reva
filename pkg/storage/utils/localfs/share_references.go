@@ -122,6 +122,18 @@ func (fs *localfs) resolveShareReference(ctx context.Context, sharePath string, 
 	return foreignPath, nil
 }
 
+// resolveShareReferenceChild resolves the reference stored at sharePath and
+// appends the relative child path, so nested items inside a received folder
+// share can be stat'ed, listed or downloaded. It returns the physical path
+// (a foreign /.reva-shared path) the storage driver can wrap.
+func (fs *localfs) resolveShareReferenceChild(ctx context.Context, sharePath, child string) (string, error) {
+	foreignPath, err := fs.resolveShareReference(ctx, sharePath, false)
+	if err != nil {
+		return "", err
+	}
+	return path.Join(foreignPath, child), nil
+}
+
 func (fs *localfs) isForeignDataPath(ctx context.Context, resourcePath string) (bool, error) {
 	if fs.conf.DisableHome || resourcePath == "" {
 		return false, nil
