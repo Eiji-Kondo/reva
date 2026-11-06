@@ -387,7 +387,7 @@ func requiresExplicitFetching(n *xml.Name) bool {
 		}
 	case _nsOwncloud:
 		switch n.Local {
-		case "favorite", "share-types", "checksums", "size":
+		case "favorite", "share-types", "checksums", "size", "last-modified-by":
 			return true
 		default:
 			return false
@@ -792,6 +792,17 @@ func (s *svc) mdToPropResponse(ctx context.Context, pf *propfindXML, md *provide
 						// link share root collection has no size
 						propstatNotFound.Prop = append(propstatNotFound.Prop, s.newProp("oc:size", ""))
 					}
+				case "last-modified-by":
+					// acting user of the last write, recorded by the storage layer
+					if k := md.GetArbitraryMetadata(); k != nil {
+						if v, ok := k.GetMetadata()["last-modified-by"]; ok && v != "" {
+							propstatOK.Prop = append(propstatOK.Prop, s.newProp("oc:last-modified-by", v))
+						} else {
+							propstatNotFound.Prop = append(propstatNotFound.Prop, s.newProp("oc:last-modified-by", ""))
+						}
+					} else {
+						propstatNotFound.Prop = append(propstatNotFound.Prop, s.newProp("oc:last-modified-by", ""))
+					}
 				case "owner-id": // phoenix only
 					if md.Owner != nil {
 						if isCurrentUserOwner(ctx, md.Owner) {
@@ -1103,6 +1114,9 @@ func metadataKeyOf(n *xml.Name) string {
 	switch {
 	case n.Space == _nsDav && n.Local == "quota-available-bytes":
 		return "quota"
+	case n.Space == _nsOwncloud && n.Local == "last-modified-by":
+		// stored under a plain key by the storage layer, not the namespaced form
+		return "last-modified-by"
 	default:
 		return fmt.Sprintf("%s/%s", n.Space, n.Local)
 	}

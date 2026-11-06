@@ -350,6 +350,11 @@ func (upload *fileUpload) FinishUpload(ctx context.Context) error {
 		}
 	}
 
+	// record the acting user so the last writer is queryable over DAV. Use the
+	// upload context: it carries the user reconstructed from the stored upload
+	// info, which the outer request context may not have.
+	upload.fs.recordLastModifiedBy(upload.ctx, np)
+
 	// TODO: set mtime if specified in metadata
 
 	// metadata propagation is left to the storage implementation
