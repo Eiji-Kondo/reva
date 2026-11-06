@@ -167,6 +167,31 @@ func getUser(ctx context.Context) (*userpb.User, error) {
 	return u, nil
 }
 
+// mdKeyLastModifiedBy is the arbitrary-metadata key that records who last wrote
+// a resource. It is surfaced over DAV as oc:last-modified-by so a client can
+// tell the acting user of the last write without an activity store.
+const mdKeyLastModifiedBy = "last-modified-by"
+
+// recordLastModifiedBy stores the acting user in the metadata DB for the
+// wrapped path np. Best effort: a request without a user in the context (an
+// internal job, say) simply records no author, and a write must never fail
+// because authorship could not be recorded.
+func (fs *localfs) recordLastModifiedBy(ctx context.Context, np string) {
+	u, err := getUser(ctx)
+	if err != nil || u == nil || u.Id == nil {
+		return
+	}
+	log := appctx.GetLogger(ctx)
+	if err := fs.addToMetadataDB(ctx, np, mdKeyLastModifiedBy, u.Username); err != nil {
+		log.Warn().Err(err).Str("path", np).Msg("localfs: could not record last-modified-by")
+	}
+	if u.DisplayName != "" {
+		if err := fs.addToMetadataDB(ctx, np, mdKeyLastModifiedBy+"-display-name", u.DisplayName); err != nil {
+			log.Warn().Err(err).Str("path", np).Msg("localfs: could not record last-modified-by display name")
+		}
+	}
+}
+
 // getVirtualHome returns the virtual home path for the current user when
 // VirtualHomeTemplate is configured (e.g., "/home/einstein").
 func (fs *localfs) getVirtualHome(ctx context.Context) (string, error) {
@@ -957,6 +982,8 @@ func (fs *localfs) CreateDir(ctx context.Context, ref *provider.Reference) error
 		return errors.Wrap(err, "localfs: error creating dir "+fp)
 	}
 
+	fs.recordLastModifiedBy(ctx, fp)
+
 	return fs.propagate(ctx, path.Dir(fp))
 }
 
@@ -1003,6 +1030,8 @@ func (fs *localfs) TouchFile(ctx context.Context, ref *provider.Reference) error
 		return errors.Wrap(err, "localfs: error creating file")
 	}
 	defer file.Close()
+
+	fs.recordLastModifiedBy(ctx, fp)
 
 	return fs.propagate(ctx, path.Dir(fp))
 }
@@ -1112,6 +1141,8 @@ func (fs *localfs) Move(ctx context.Context, oldRef, newRef *provider.Reference)
 	if err := fs.copyMD(oldName, newName); err != nil {
 		return errors.Wrap(err, "localfs: error copying metadata")
 	}
+
+	fs.recordLastModifiedBy(ctx, newName)
 
 	if err := fs.propagate(ctx, newName); err != nil {
 		return err

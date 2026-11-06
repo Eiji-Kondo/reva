@@ -14,6 +14,8 @@ db_engine = "sqlite"
 [grpc]
 address = "127.0.0.1:9142"
 
+[grpc.interceptors.audit]
+
 [grpc.services.gateway]
 commit_share_to_storage_grant = true
 commit_share_to_storage_ref = true
