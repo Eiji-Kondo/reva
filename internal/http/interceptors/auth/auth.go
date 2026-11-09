@@ -53,6 +53,11 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
+// defaultCacheSize bounds the user-groups cache when cache_size is not
+// configured. gcache's LFU preallocates a map sized to the capacity, so the
+// previous hardcoded 1000000 reserved ~50 MiB of live heap even when empty.
+const defaultCacheSize = 10000
+
 var userGroupsCache gcache.Cache
 
 type config struct {
@@ -72,6 +77,7 @@ type config struct {
 	TokenWriter            string                    `mapstructure:"token_writer"`
 	TokenWriters           map[string]map[string]any `mapstructure:"token_writers"`
 	MachineSecret          string                    `mapstructure:"machine_secret" docs:"nil;Secret used for the gateway to authenticate a user when using a signed URL"`
+	CacheSize              int                       `mapstructure:"cache_size"`
 }
 
 func parseConfig(m map[string]any) (*config, error) {
@@ -113,7 +119,7 @@ func New(m map[string]any, unprotected []string) (global.Middleware, error) {
 		conf.CredentialsByUserAgent = map[string]string{}
 	}
 
-	userGroupsCache = gcache.New(1000000).LFU().Build()
+	userGroupsCache = gcache.New(conf.CacheSize).LFU().Build()
 
 	credChain := map[string]auth.CredentialStrategy{}
 	for i, key := range conf.CredentialChain {

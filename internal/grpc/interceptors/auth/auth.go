@@ -42,6 +42,12 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// defaultCacheSize bounds the auth caches when cache_size is not configured.
+// gcache's LFU preallocates a map sized to the capacity, so the previous
+// hardcoded 1000000 reserved ~50 MiB of live heap per cache, per interceptor,
+// even when the cache was empty.
+const defaultCacheSize = 10000
+
 var userGroupsCache gcache.Cache
 var scopeExpansionCache gcache.Cache
 
@@ -51,6 +57,7 @@ type config struct {
 	TokenManager  string                    `mapstructure:"token_manager"`
 	TokenManagers map[string]map[string]any `mapstructure:"token_managers"`
 	GatewayAddr   string                    `mapstructure:"gateway_addr"`
+	CacheSize     int                       `mapstructure:"cache_size"`
 	blockedUsers  []string
 }
 
@@ -61,6 +68,9 @@ func parseConfig(m map[string]any) (*config, error) {
 		return nil, err
 	}
 	c.blockedUsers = sharedconf.GetBlockedUsers()
+	if c.CacheSize == 0 {
+		c.CacheSize = defaultCacheSize
+	}
 	return c, nil
 }
 
@@ -80,8 +90,8 @@ func NewUnary(m map[string]any, unprotected []string) (grpc.UnaryServerIntercept
 	}
 	conf.GatewayAddr = sharedconf.GetGatewaySVC(conf.GatewayAddr)
 
-	userGroupsCache = gcache.New(1000000).LFU().Build()
-	scopeExpansionCache = gcache.New(1000000).LFU().Build()
+	userGroupsCache = gcache.New(conf.CacheSize).LFU().Build()
+	scopeExpansionCache = gcache.New(conf.CacheSize).LFU().Build()
 
 	h, ok := tokenmgr.NewFuncs[conf.TokenManager]
 	if !ok {
@@ -140,8 +150,8 @@ func NewStream(m map[string]any, unprotected []string) (grpc.StreamServerInterce
 		conf.TokenManager = "jwt"
 	}
 
-	userGroupsCache = gcache.New(1000000).LFU().Build()
-	scopeExpansionCache = gcache.New(1000000).LFU().Build()
+	userGroupsCache = gcache.New(conf.CacheSize).LFU().Build()
+	scopeExpansionCache = gcache.New(conf.CacheSize).LFU().Build()
 
 	h, ok := tokenmgr.NewFuncs[conf.TokenManager]
 	if !ok {
