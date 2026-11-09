@@ -182,12 +182,23 @@ func (fs *localfs) recordLastModifiedBy(ctx context.Context, np string) {
 		return
 	}
 	log := appctx.GetLogger(ctx)
-	if err := fs.addToMetadataDB(ctx, np, mdKeyLastModifiedBy, u.Username); err != nil {
-		log.Warn().Err(err).Str("path", np).Msg("localfs: could not record last-modified-by")
+
+	// The Graph drive root reports the last editor of the space, so a write to
+	// any resource also stamps the storage root. Without this the space root has
+	// no author: it is never written to directly.
+	paths := []string{np}
+	if root := fs.wrap(ctx, "/"); root != np {
+		paths = append(paths, root)
 	}
-	if u.DisplayName != "" {
-		if err := fs.addToMetadataDB(ctx, np, mdKeyLastModifiedBy+"-display-name", u.DisplayName); err != nil {
-			log.Warn().Err(err).Str("path", np).Msg("localfs: could not record last-modified-by display name")
+
+	for _, p := range paths {
+		if err := fs.addToMetadataDB(ctx, p, mdKeyLastModifiedBy, u.Username); err != nil {
+			log.Warn().Err(err).Str("path", p).Msg("localfs: could not record last-modified-by")
+		}
+		if u.DisplayName != "" {
+			if err := fs.addToMetadataDB(ctx, p, mdKeyLastModifiedBy+"-display-name", u.DisplayName); err != nil {
+				log.Warn().Err(err).Str("path", p).Msg("localfs: could not record last-modified-by display name")
+			}
 		}
 	}
 }

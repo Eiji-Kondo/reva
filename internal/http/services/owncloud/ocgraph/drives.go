@@ -191,6 +191,19 @@ func (s *svc) cs3StorageSpaceToDrive(ctx context.Context, user *userpb.User, spa
 		drive.Root.LastModifiedDateTime = libregraph.PtrTime(time.Unix(int64(space.RootInfo.Mtime.Seconds), int64(space.RootInfo.Mtime.Nanos)))
 	}
 
+	// the space root carries the last editor only as arbitrary metadata; it is
+	// not part of RootInfo, so it has to be fetched with an explicit Stat
+	if space.RootInfo != nil && space.RootInfo.Path != "" {
+		if gw, err := s.getClient(); err == nil {
+			if res, err := gw.Stat(ctx, &provider.StatRequest{
+				Ref:                   &provider.Reference{Path: space.RootInfo.Path},
+				ArbitraryMetadataKeys: lastModifiedByMetadataKeys,
+			}); err == nil && res.Status != nil && res.Status.Code == rpcv1beta1.Code_CODE_OK {
+				drive.Root.LastModifiedBy = lastModifiedByFromMetadata(res.Info.ArbitraryMetadata)
+			}
+		}
+	}
+
 	if space.ReadmeId != "" || space.ThumbnailId != "" {
 		gw, err := s.getClient()
 		// If an error occurs, we just don't set the readme / thumbnail
