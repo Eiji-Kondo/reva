@@ -25,6 +25,35 @@ import (
 	"github.com/pkg/errors"
 )
 
+// lastModifiedByMetadataKey is the arbitrary-metadata key the storage layer
+// uses to record the acting user of the last write (localfs
+// recordLastModifiedBy). It is surfaced over DAV as oc:last-modified-by.
+const lastModifiedByMetadataKey = "last-modified-by"
+
+// lastModifiedByMetadataKeys are the arbitrary-metadata keys a Stat/List call
+// must request for the last editor to be returned in ResourceInfo.
+var lastModifiedByMetadataKeys = []string{
+	lastModifiedByMetadataKey,
+	lastModifiedByMetadataKey + "-display-name",
+}
+
+// lastModifiedByFromMetadata builds the Graph identity of the last editor from
+// the storage metadata, or nil when the storage layer recorded no editor.
+func lastModifiedByFromMetadata(md *provider.ArbitraryMetadata) *libregraph.IdentitySet {
+	if md == nil || len(md.Metadata) == 0 {
+		return nil
+	}
+	username := md.Metadata[lastModifiedByMetadataKey]
+	if username == "" {
+		return nil
+	}
+	id := &libregraph.Identity{Id: libregraph.PtrString(username)}
+	if dn := md.Metadata[lastModifiedByMetadataKey+"-display-name"]; dn != "" {
+		id.DisplayName = dn
+	}
+	return &libregraph.IdentitySet{User: id}
+}
+
 func (s *svc) shareToLibregraphPerm(ctx context.Context, share *GenericShare) (*libregraph.Permission, error) {
 	if share == nil {
 		return nil, errors.New("share is nil")

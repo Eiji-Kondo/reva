@@ -131,8 +131,10 @@ func (s *svc) initRouter() {
 		})
 		r.Get("/roleManagement/permissions/roleDefinitions", s.getRoleDefinitions)
 		r.Route("/drives/{space-id}", func(r chi.Router) {
+			r.Get("/", s.getSpace)
 			r.Get("/root/permissions", s.getRootDrivePermissions)
 			r.Route("/items/{resource-id}", func(r chi.Router) {
+				r.Get("/", s.getDriveItem)
 				r.Patch("/", s.updateReceivedShare)
 				r.Post("/invite", s.share)
 				r.Post("/createLink", s.createLink)
