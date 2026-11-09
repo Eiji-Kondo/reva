@@ -187,3 +187,13 @@ func match(a, b []string) bool {
 func fail(t *testing.T, got, expected []string) {
 	t.Fatalf("got: %+v expected: %+v", got, expected)
 }
+
+func TestParseConfigCacheSizeOverride(t *testing.T) {
+	conf, err := parseConfig(map[string]any{"cache_size": 500})
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	if conf.CacheSize != 500 {
+		t.Fatalf("CacheSize = %d, want 500", conf.CacheSize)
+	}
+}
