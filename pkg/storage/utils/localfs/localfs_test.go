@@ -21,6 +21,7 @@ package localfs
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/url"
 	"os"
 	"path"
@@ -32,6 +33,7 @@ import (
 	typespb "github.com/cs3org/go-cs3apis/cs3/types/v1beta1"
 	"github.com/cs3org/reva/v3/pkg/appctx"
 	"github.com/cs3org/reva/v3/pkg/errtypes"
+	"github.com/cs3org/reva/v3/pkg/storage"
 )
 
 func TestMsToTimestamp(t *testing.T) {
@@ -500,6 +502,58 @@ func TestWriteThroughSharedFolderReference(t *testing.T) {
 	// The share reference itself must survive a child delete.
 	if _, err := os.Stat(path.Join(config.References, "marie", "/MyShares/sf")); err != nil {
 		t.Fatalf("share reference disappeared after a child delete: %v", err)
+	}
+}
+
+func TestDownloadRanges(t *testing.T) {
+	config := &Config{Root: t.TempDir(), UserLayout: "{{.Username}}"}
+	config.ApplyDefaults()
+	db, err := initializeDB(config.Root, "test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	fs := &localfs{conf: config, db: db}
+
+	ctx := appctx.ContextSetUser(context.Background(), &userpb.User{
+		Id:       &userpb.UserId{OpaqueId: "einstein", Idp: "https://idp.example.test", Type: userpb.UserType_USER_TYPE_PRIMARY},
+		Username: "einstein",
+	})
+
+	const content = "0123456789abcdefghij" // 20 bytes, index == byte value
+	filePath := path.Join(config.DataDirectory, "einstein", "media.mp4")
+	if err := os.MkdirAll(path.Dir(filePath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filePath, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	read := func(t *testing.T, ranges []storage.Range) string {
+		t.Helper()
+		rc, err := fs.Download(ctx, &provider.Reference{Path: "/media.mp4"}, ranges)
+		if err != nil {
+			t.Fatalf("Download(%v): %v", ranges, err)
+		}
+		defer rc.Close()
+		got, err := io.ReadAll(rc)
+		if err != nil {
+			t.Fatalf("ReadAll(%v): %v", ranges, err)
+		}
+		return string(got)
+	}
+
+	if got := read(t, nil); got != content {
+		t.Fatalf("no range: got %q, want %q", got, content)
+	}
+	if got := read(t, []storage.Range{{Start: 0, Length: 5}}); got != "01234" {
+		t.Fatalf("prefix range: got %q, want %q", got, "01234")
+	}
+	if got := read(t, []storage.Range{{Start: 15, Length: 5}}); got != "fghij" {
+		t.Fatalf("suffix range: got %q, want %q", got, "fghij")
+	}
+	if got := read(t, []storage.Range{{Start: 2, Length: 3}, {Start: 10, Length: 2}}); got != "234ab" {
+		t.Fatalf("multiple ranges: got %q, want %q", got, "234ab")
 	}
 }
 
