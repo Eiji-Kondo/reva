@@ -1398,9 +1398,6 @@ func (fs *localfs) listShareFolderRoot(ctx context.Context, home string, mdKeys 
 }
 
 func (fs *localfs) Download(ctx context.Context, ref *provider.Reference, ranges []storage.Range) (io.ReadCloser, error) {
-	if len(ranges) > 0 {
-		return nil, errtypes.NotSupported("Download with ranges is not supported with this storage driver")
-	}
 	fn, err := fs.resolve(ctx, ref)
 	log := appctx.GetLogger(ctx)
 
@@ -1430,8 +1427,33 @@ func (fs *localfs) Download(ctx context.Context, ref *provider.Reference, ranges
 		log.Error().Err(err).Str("path", fn).Msg("localfs: error opening file")
 		return nil, errors.Wrap(err, "localfs: error reading "+fn)
 	}
-	return r, nil
+
+	// A range request asks for a subset of the file; serve it from the same
+	// descriptor so the caller can stream (and seek in) media without buffering
+	// the whole file. Multiple ranges are concatenated in the requested order,
+	// which is what the download handler expects.
+	switch len(ranges) {
+	case 0:
+		return r, nil
+	case 1:
+		return &rangeReadCloser{io.NewSectionReader(r, ranges[0].Start, ranges[0].Length), r}, nil
+	default:
+		readers := make([]io.Reader, 0, len(ranges))
+		for _, ra := range ranges {
+			readers = append(readers, io.NewSectionReader(r, ra.Start, ra.Length))
+		}
+		return &rangeReadCloser{io.MultiReader(readers...), r}, nil
+	}
 }
+
+// rangeReadCloser reads a byte range of an open file and closes the file when
+// the reader is closed.
+type rangeReadCloser struct {
+	io.Reader
+	file *os.File
+}
+
+func (r *rangeReadCloser) Close() error { return r.file.Close() }
 
 func (fs *localfs) archiveRevision(ctx context.Context, np string) error {
 	versionsDir := fs.wrapVersions(ctx, fs.unwrap(ctx, np))
