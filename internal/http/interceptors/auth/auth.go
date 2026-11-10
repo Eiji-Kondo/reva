@@ -86,6 +86,9 @@ func parseConfig(m map[string]any) (*config, error) {
 		err = errors.Wrap(err, "error decoding conf")
 		return nil, err
 	}
+	if c.CacheSize == 0 {
+		c.CacheSize = defaultCacheSize
+	}
 	return c, nil
 }
 

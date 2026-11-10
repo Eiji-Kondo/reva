@@ -188,6 +188,16 @@ func fail(t *testing.T, got, expected []string) {
 	t.Fatalf("got: %+v expected: %+v", got, expected)
 }
 
+func TestParseConfigCacheSizeDefault(t *testing.T) {
+	conf, err := parseConfig(map[string]any{})
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	if conf.CacheSize != defaultCacheSize {
+		t.Fatalf("CacheSize = %d, want %d", conf.CacheSize, defaultCacheSize)
+	}
+}
+
 func TestParseConfigCacheSizeOverride(t *testing.T) {
 	conf, err := parseConfig(map[string]any{"cache_size": 500})
 	if err != nil {
