@@ -19,15 +19,28 @@ import (
 	"errors"
 	"os"
 	"path"
+	"strings"
 	"time"
 
 	provider "github.com/cs3org/go-cs3apis/cs3/storage/provider/v1beta1"
 	typespb "github.com/cs3org/go-cs3apis/cs3/types/v1beta1"
 	"github.com/cs3org/reva/v3/pkg/errtypes"
-	"github.com/mattn/go-sqlite3"
+	"github.com/go-sql-driver/mysql"
 )
 
 const lockSetOpaqueKey = "reva-localfs-lock-set"
+
+// isDuplicateKeyErr reports whether err is a primary/unique key violation.
+// MySQL/MariaDB is matched by its error code; sqlite (mattn or modernc) is
+// matched by message so this file does not need to import the cgo driver, which
+// is what keeps a CGO_ENABLED=0 build possible.
+func isDuplicateKeyErr(err error) bool {
+	var myErr *mysql.MySQLError
+	if errors.As(err, &myErr) {
+		return myErr.Number == 1062
+	}
+	return strings.Contains(err.Error(), "UNIQUE constraint failed")
+}
 
 func (fs *localfs) lockResourcePath(ctx context.Context, ref *provider.Reference) (string, error) {
 	resourcePath, err := fs.resolve(ctx, ref)
@@ -150,8 +163,7 @@ func (fs *localfs) SetLock(ctx context.Context, ref *provider.Reference, lock *p
 		"INSERT INTO resource_locks (resource, lock_id, lock_json, expires_at) VALUES (?, ?, ?, ?)",
 		resourcePath, lock.GetLockId(), string(lockJSON), expiresAt,
 	); err != nil {
-		var sqliteErr sqlite3.Error
-		if errors.As(err, &sqliteErr) && sqliteErr.ExtendedCode == sqlite3.ErrConstraintPrimaryKey {
+		if isDuplicateKeyErr(err) {
 			return errtypes.Conflict("localfs: lock id is already in use")
 		}
 		return err
