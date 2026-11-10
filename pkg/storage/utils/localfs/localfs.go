@@ -62,6 +62,16 @@ type Config struct {
 	Versions            string `mapstructure:"versions"`
 	Shadow              string `mapstructure:"shadow"`
 	References          string `mapstructure:"references"`
+
+	// DBEngine selects where the localfs metadata DB (ACLs, favorites,
+	// metadata, share references, recycle-bin and locks) lives. When empty the
+	// shared DB engine is used; "sqlite" (or empty) keeps the embedded file.
+	DBEngine   string `mapstructure:"db_engine"`
+	DBUsername string `mapstructure:"db_username"`
+	DBPassword string `mapstructure:"db_password"`
+	DBHost     string `mapstructure:"db_host"`
+	DBPort     int    `mapstructure:"db_port"`
+	DBName     string `mapstructure:"db_name"`
 }
 
 func (c *Config) ApplyDefaults() {
@@ -97,6 +107,7 @@ func (c *Config) ApplyDefaults() {
 type localfs struct {
 	conf         *Config
 	db           *sql.DB
+	dialect      dbDialect
 	chunkHandler *chunking.ChunkHandler
 }
 
@@ -113,12 +124,7 @@ func NewLocalFS(c *Config) (storage.FS, error) {
 		}
 	}
 
-	dbName := "localfs.db"
-	if !c.DisableHome {
-		dbName = "localhomefs.db"
-	}
-
-	db, err := initializeDB(c.Root, dbName)
+	dialect, db, err := openDB(c)
 	if err != nil {
 		return nil, errors.Wrap(err, "localfs: error initializing db")
 	}
@@ -126,6 +132,7 @@ func NewLocalFS(c *Config) (storage.FS, error) {
 	return &localfs{
 		conf:         c,
 		db:           db,
+		dialect:      dialect,
 		chunkHandler: chunking.NewChunkHandler(c.Uploads),
 	}, nil
 }
