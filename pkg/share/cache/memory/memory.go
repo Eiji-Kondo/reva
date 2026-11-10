@@ -34,6 +34,13 @@ func init() {
 
 }
 
+// defaultCacheSize is the maximum number of entries kept in a memory cache.
+// gcache's LFU backend allocates the backing map with the configured size as a
+// capacity hint, so a large value costs that memory up front even while the
+// cache is empty. 1e6 entries is roughly 50 MiB per cache, and reva builds
+// several of these, so the default is deliberately modest.
+const defaultCacheSize = 10000
+
 type config struct {
 	CacheSize int `mapstructure:"cache_size"`
 }
@@ -44,7 +51,7 @@ type manager[T cache.Cacheable] struct {
 
 func (c *config) ApplyDefaults() {
 	if c.CacheSize == 0 {
-		c.CacheSize = 1000000
+		c.CacheSize = defaultCacheSize
 	}
 }
 
