@@ -106,25 +106,6 @@ func (s *svc) propfindResponse(ctx context.Context, w http.ResponseWriter, r *ht
 		return
 	}
 
-	linkFilters := make([]*link.ListPublicSharesRequest_Filter, 0, len(resourceInfos))
-	shareFilters := make([]*collaboration.Filter, 0, len(resourceInfos))
-	for i := range resourceInfos {
-		linkFilters = append(linkFilters, publicshare.ResourceIDFilter(resourceInfos[i].Id))
-		shareFilters = append(shareFilters, share.ResourceIDFilter(resourceInfos[i].Id))
-	}
-	linkFilters = append(linkFilters, &link.ListPublicSharesRequest_Filter{
-		Type: link.ListPublicSharesRequest_Filter_TYPE_CREATOR,
-		Term: &link.ListPublicSharesRequest_Filter_Creator{
-			Creator: user.Id,
-		},
-	})
-	shareFilters = append(shareFilters, &collaboration.Filter{
-		Type: collaboration.Filter_TYPE_CREATOR,
-		Term: &collaboration.Filter_Creator{
-			Creator: user.Id,
-		},
-	})
-
 	client, err := s.getClient()
 	if err != nil {
 		log.Error().Err(err).Msg("error getting grpc client")
@@ -132,40 +113,65 @@ func (s *svc) propfindResponse(ctx context.Context, w http.ResponseWriter, r *ht
 		return
 	}
 
-	var linkshares map[string]struct{}
-	listResp, err := client.ListPublicShares(ctx, &link.ListPublicSharesRequest{
-		Opaque: &types.Opaque{
-			Map: map[string]*types.OpaqueEntry{
-				appctx.ResoucePathCtx: {Decoder: "plain", Value: []byte(parentInfo.Path)},
-			},
-		},
-		Filters: linkFilters,
-	})
-	if err == nil {
-		linkshares = make(map[string]struct{}, len(listResp.Share))
-		for i := range listResp.Share {
-			linkshares[resourceid.OwnCloudResourceIDWrap(listResp.Share[i].ResourceId)] = struct{}{}
+	// The user and link share maps are only read when building the
+	// oc:share-types property, and that property is never part of allprop (see
+	// requiresExplicitFetching) and is only emitted for an explicit request.
+	// Skip the share lookups otherwise: they are two extra gRPC round trips per
+	// PROPFIND whose result is discarded.
+	var linkshares, usershares map[string]struct{}
+	if needsShareTypes(pf) {
+		linkFilters := make([]*link.ListPublicSharesRequest_Filter, 0, len(resourceInfos)+1)
+		shareFilters := make([]*collaboration.Filter, 0, len(resourceInfos)+1)
+		for i := range resourceInfos {
+			linkFilters = append(linkFilters, publicshare.ResourceIDFilter(resourceInfos[i].Id))
+			shareFilters = append(shareFilters, share.ResourceIDFilter(resourceInfos[i].Id))
 		}
-	} else {
-		log.Error().Err(err).Msg("propfindResponse: couldn't list public shares")
-	}
+		linkFilters = append(linkFilters, &link.ListPublicSharesRequest_Filter{
+			Type: link.ListPublicSharesRequest_Filter_TYPE_CREATOR,
+			Term: &link.ListPublicSharesRequest_Filter_Creator{
+				Creator: user.Id,
+			},
+		})
+		shareFilters = append(shareFilters, &collaboration.Filter{
+			Type: collaboration.Filter_TYPE_CREATOR,
+			Term: &collaboration.Filter_Creator{
+				Creator: user.Id,
+			},
+		})
 
-	var usershares map[string]struct{}
-	listSharesResp, err := client.ListShares(ctx, &collaboration.ListSharesRequest{
-		Filters: shareFilters,
-		Opaque: &types.Opaque{
-			Map: map[string]*types.OpaqueEntry{
-				appctx.ResoucePathCtx: {Decoder: "plain", Value: []byte(parentInfo.Path)},
+		listResp, err := client.ListPublicShares(ctx, &link.ListPublicSharesRequest{
+			Opaque: &types.Opaque{
+				Map: map[string]*types.OpaqueEntry{
+					appctx.ResoucePathCtx: {Decoder: "plain", Value: []byte(parentInfo.Path)},
+				},
 			},
-		},
-	})
-	if err == nil {
-		usershares = make(map[string]struct{}, len(listSharesResp.Shares))
-		for i := range listSharesResp.Shares {
-			usershares[resourceid.OwnCloudResourceIDWrap(listSharesResp.Shares[i].ResourceId)] = struct{}{}
+			Filters: linkFilters,
+		})
+		if err == nil {
+			linkshares = make(map[string]struct{}, len(listResp.Share))
+			for i := range listResp.Share {
+				linkshares[resourceid.OwnCloudResourceIDWrap(listResp.Share[i].ResourceId)] = struct{}{}
+			}
+		} else {
+			log.Error().Err(err).Msg("propfindResponse: couldn't list public shares")
 		}
-	} else {
-		log.Error().Err(err).Msg("propfindResponse: couldn't list user shares")
+
+		listSharesResp, err := client.ListShares(ctx, &collaboration.ListSharesRequest{
+			Filters: shareFilters,
+			Opaque: &types.Opaque{
+				Map: map[string]*types.OpaqueEntry{
+					appctx.ResoucePathCtx: {Decoder: "plain", Value: []byte(parentInfo.Path)},
+				},
+			},
+		})
+		if err == nil {
+			usershares = make(map[string]struct{}, len(listSharesResp.Shares))
+			for i := range listSharesResp.Shares {
+				usershares[resourceid.OwnCloudResourceIDWrap(listSharesResp.Shares[i].ResourceId)] = struct{}{}
+			}
+		} else {
+			log.Error().Err(err).Msg("propfindResponse: couldn't list user shares")
+		}
 	}
 
 	propRes, err := s.multistatusResponse(ctx, &pf, resourceInfos, parentInfo, namespace, hrefBase, usershares, linkshares)
@@ -196,6 +202,19 @@ func (s *svc) propfindResponse(ctx context.Context, w http.ResponseWriter, r *ht
 	}
 }
 
+// needsShareTypes reports whether the request explicitly asks for oc:share-types.
+// That property is the only consumer of the user and link share lookups in
+// propfindResponse, and it is never returned for allprop (requiresExplicitFetching
+// returns true for it), so the lookups can be skipped in every other case.
+func needsShareTypes(pf propfindXML) bool {
+	for i := range pf.Prop {
+		if pf.Prop[i].Space == _nsOwncloud && pf.Prop[i].Local == "share-types" {
+			return true
+		}
+	}
+	return false
+}
+
 // returns parent, children, hrefBase, OK
 func (s *svc) getResourceInfos(ctx context.Context, w http.ResponseWriter, r *http.Request, pf propfindXML, ref *provider.Reference, log zerolog.Logger) (*provider.ResourceInfo, []*provider.ResourceInfo, string, bool) {
 	depth := r.Header.Get(HeaderDepth)
@@ -222,23 +241,23 @@ func (s *svc) getResourceInfos(ctx context.Context, w http.ResponseWriter, r *ht
 		return nil, nil, "", false
 	}
 
-	var metadataKeys []string  
-  
-	if pf.Allprop != nil {  
-		metadataKeys = append(metadataKeys, "*")  
-	} else {  
-		for i := range pf.Prop {  
-			if requiresExplicitFetching(&pf.Prop[i]) {  
-				k := metadataKeyOf(&pf.Prop[i])  
-				// oc:favorite is stored under the per-user label key  
-				if pf.Prop[i].Space == _nsOwncloud && pf.Prop[i].Local == "favorite" {  
-					if u, ok := appctx.ContextGetUser(ctx); ok && u.Id != nil {  
-						k = fmt.Sprintf("reva.labels.%s.favorite", u.Id.OpaqueId)  
-					}  
-				}  
-				metadataKeys = append(metadataKeys, k)  
-			}  
-		}  
+	var metadataKeys []string
+
+	if pf.Allprop != nil {
+		metadataKeys = append(metadataKeys, "*")
+	} else {
+		for i := range pf.Prop {
+			if requiresExplicitFetching(&pf.Prop[i]) {
+				k := metadataKeyOf(&pf.Prop[i])
+				// oc:favorite is stored under the per-user label key
+				if pf.Prop[i].Space == _nsOwncloud && pf.Prop[i].Local == "favorite" {
+					if u, ok := appctx.ContextGetUser(ctx); ok && u.Id != nil {
+						k = fmt.Sprintf("reva.labels.%s.favorite", u.Id.OpaqueId)
+					}
+				}
+				metadataKeys = append(metadataKeys, k)
+			}
+		}
 	}
 	req := &provider.StatRequest{
 		Ref:                   ref,
