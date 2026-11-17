@@ -24,6 +24,7 @@ import (
 	"os"
 	"reflect"
 	"testing"
+	"time"
 
 	userpb "github.com/cs3org/go-cs3apis/cs3/identity/user/v1beta1"
 	provider "github.com/cs3org/go-cs3apis/cs3/storage/provider/v1beta1"
@@ -297,5 +298,37 @@ func TestListProjects(t *testing.T) {
 				t.Fatalf("projects' list do not match. got=%+v expected=%+v", got.StorageSpaces, tt.expected)
 			}
 		})
+	}
+}
+
+// TestCacheTTLUsesSeconds guards against a regression where the configured
+// CacheTTL (documented in seconds) was passed to ttlcache without multiplying
+// by time.Second. That made the cache TTL 60ns instead of 60s, which made the
+// ttlcache expiration goroutine busy-loop and burn a full CPU core.
+func TestCacheTTLUsesSeconds(t *testing.T) {
+	ctx := context.Background()
+	dbName := "ttl_test_db.sqlite"
+	defer os.Remove(dbName)
+	mgr, err := New(ctx, map[string]any{
+		"db_engine": "sqlite",
+		"db_name":   dbName,
+		"cache_ttl": 60,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error creating manager: %v", err)
+	}
+	catmgr := mgr.(*ProjectsManager)
+
+	// A fresh item must report a remaining TTL on the order of seconds, not
+	// nanoseconds, otherwise the expiration loop never sleeps.
+	if err := catmgr.cache.Set("k", "v"); err != nil {
+		t.Fatalf("unexpected error setting cache item: %v", err)
+	}
+	_, remaining, err := catmgr.cache.GetWithTTL("k")
+	if err != nil {
+		t.Fatalf("unexpected error getting cache item: %v", err)
+	}
+	if remaining < 30*time.Second {
+		t.Fatalf("remaining TTL = %v, want ~60s (a sub-second TTL makes the cache spin)", remaining)
 	}
 }
