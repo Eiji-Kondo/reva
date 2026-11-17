@@ -29,12 +29,18 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"sync"
 	"text/template"
 
 	"github.com/Masterminds/sprig"
 	userpb "github.com/cs3org/go-cs3apis/cs3/identity/user/v1beta1"
 	"github.com/pkg/errors"
 )
+
+// tplCache holds parsed templates keyed by the cleaned template string. Parsing
+// is pure and a *template.Template is safe for concurrent Execute once parsed,
+// so one compile per distinct layout string is enough.
+var tplCache sync.Map
 
 // UserData contains the template placeholders for a user.
 // For example {{.Username}} or {{.Id.Idp}}.
@@ -55,8 +61,7 @@ type EmailData struct {
 func WithUser(u *userpb.User, tpl string) string {
 	tpl = clean(tpl)
 	ut := newUserData(u)
-	// compile given template tpl
-	t, err := template.New("tpl").Funcs(sprig.TxtFuncMap()).Parse(tpl)
+	t, err := compiledTemplate(tpl)
 	if err != nil {
 		err := errors.Wrap(err, fmt.Sprintf("error parsing template: user_template:%+v tpl:%s", ut, tpl))
 		panic(err)
@@ -67,6 +72,19 @@ func WithUser(u *userpb.User, tpl string) string {
 		panic(err)
 	}
 	return b.String()
+}
+
+// compiledTemplate returns the parsed template for tpl, compiling it once.
+func compiledTemplate(tpl string) (*template.Template, error) {
+	if v, ok := tplCache.Load(tpl); ok {
+		return v.(*template.Template), nil
+	}
+	t, err := template.New("tpl").Funcs(sprig.TxtFuncMap()).Parse(tpl)
+	if err != nil {
+		return nil, err
+	}
+	tplCache.Store(tpl, t)
+	return t, nil
 }
 
 func newUserData(u *userpb.User) *UserData {
