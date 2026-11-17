@@ -583,3 +583,81 @@ func TestGetPathByIDKeepsUserHomeAndRejectsPrivatePaths(t *testing.T) {
 		t.Fatal("expected traversal resource id to be denied")
 	}
 }
+
+// TestListFolderReturnsArbitraryMetadata pins that a listing still returns the
+// arbitrary metadata of every child now that it is fetched with one batched
+// query instead of one query per child. Each child gets a distinct key/value so
+// a batch mix-up (wrong resource mapped to wrong metadata) would fail.
+func TestListFolderReturnsArbitraryMetadata(t *testing.T) {
+	config := &Config{Root: t.TempDir(), UserLayout: "{{.Username}}"}
+	config.ApplyDefaults()
+	db, err := initializeDB(config.Root, "test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	fs := &localfs{conf: config, db: db}
+
+	ctx := appctx.ContextSetUser(context.Background(), &userpb.User{
+		Id:       &userpb.UserId{OpaqueId: "einstein", Idp: "https://idp.example.test", Type: userpb.UserType_USER_TYPE_PRIMARY},
+		Username: "einstein",
+	})
+
+	dir := path.Join(config.DataDirectory, "einstein", "meta")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{}
+	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
+		p := path.Join(dir, name)
+		if err := os.WriteFile(p, []byte(name), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := fs.addToMetadataDB(ctx, p, "k", name); err != nil {
+			t.Fatal(err)
+		}
+		want["/meta/"+name] = name
+	}
+
+	children, err := fs.ListFolder(ctx, &provider.Reference{Path: "/meta"}, []string{"k"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(children) != 3 {
+		t.Fatalf("children = %d, want 3", len(children))
+	}
+	for _, c := range children {
+		got := c.GetArbitraryMetadata().GetMetadata()["k"]
+		if got != want[c.Path] {
+			t.Errorf("child %s metadata[k] = %q, want %q", c.Path, got, want[c.Path])
+		}
+	}
+}
+
+// TestFilterMetadata pins the key-selection semantics of the batched path.
+func TestFilterMetadata(t *testing.T) {
+	raw := map[string]string{"a": "1", "b": "2"}
+	for _, tc := range []struct {
+		name   string
+		keys   []string
+		expect map[string]string
+	}{
+		{"empty means all", nil, map[string]string{"a": "1", "b": "2"}},
+		{"star means all", []string{"*"}, map[string]string{"a": "1", "b": "2"}},
+		{"select one", []string{"a"}, map[string]string{"a": "1"}},
+		{"missing key", []string{"z"}, map[string]string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := filterMetadata(raw, tc.keys)
+			if len(got) != len(tc.expect) {
+				t.Fatalf("got %v, want %v", got, tc.expect)
+			}
+			for k, v := range tc.expect {
+				if got[k] != v {
+					t.Fatalf("got %v, want %v", got, tc.expect)
+				}
+			}
+		})
+	}
+}
+

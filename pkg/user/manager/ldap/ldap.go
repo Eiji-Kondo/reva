@@ -157,7 +157,7 @@ func (m *manager) GetUser(ctx context.Context, uid *userpb.UserId, skipFetchingG
 	if err != nil {
 		return nil, err
 	}
-	defer l.Close()
+	defer utils.PutLDAPConnection(&m.c.LDAPConn, l)
 
 	// Search for the given clientID
 	searchRequest := ldap.NewSearchRequest(
@@ -244,7 +244,7 @@ func (m *manager) GetUserByClaim(ctx context.Context, claim, value string, skipF
 	if err != nil {
 		return nil, err
 	}
-	defer l.Close()
+	defer utils.PutLDAPConnection(&m.c.LDAPConn, l)
 
 	// Search for the given clientID
 	searchRequest := ldap.NewSearchRequest(
@@ -314,7 +314,7 @@ func (m *manager) FindUsers(ctx context.Context, query string, filters []*userpb
 	if err != nil {
 		return nil, err
 	}
-	defer l.Close()
+	defer utils.PutLDAPConnection(&m.c.LDAPConn, l)
 
 	// Search for the given clientID
 	searchRequest := ldap.NewSearchRequest(
@@ -397,7 +397,7 @@ func (m *manager) GetUserGroups(ctx context.Context, uid *userpb.UserId) ([]stri
 	if err != nil {
 		return []string{}, err
 	}
-	defer l.Close()
+	defer utils.PutLDAPConnection(&m.c.LDAPConn, l)
 
 	// Search for the given clientID
 	searchRequest := ldap.NewSearchRequest(

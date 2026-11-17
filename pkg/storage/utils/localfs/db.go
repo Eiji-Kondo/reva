@@ -23,6 +23,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path"
+	"strings"
 
 	// Provides sqlite and MySQL drivers.
 	_ "github.com/go-sql-driver/mysql"
@@ -262,6 +263,59 @@ func (fs *localfs) getMetadata(ctx context.Context, resource string) (*sql.Rows,
 		return nil, err
 	}
 	return grants, nil
+}
+
+// metadataBatchSize caps the number of resources in one IN(...) query. Older
+// SQLite builds default to 999 bound variables, so stay well under that and
+// split larger listings into several queries.
+const metadataBatchSize = 500
+
+// getMetadataBatch fetches the metadata for many resources with one query per
+// batch instead of one query per resource. A directory listing would otherwise
+// issue a SELECT per child, which dominates PROPFIND on slow storage.
+func (fs *localfs) getMetadataBatch(ctx context.Context, resources []string) (map[string]map[string]string, error) {
+	out := make(map[string]map[string]string, len(resources))
+	// Pre-seed every requested resource so a caller can tell "fetched, no rows"
+	// apart from "not part of this batch" (a nil map).
+	for _, r := range resources {
+		if out[r] == nil {
+			out[r] = map[string]string{}
+		}
+	}
+	for start := 0; start < len(resources); start += metadataBatchSize {
+		end := start + metadataBatchSize
+		if end > len(resources) {
+			end = len(resources)
+		}
+		batch := resources[start:end]
+		placeholders := make([]string, len(batch))
+		args := make([]any, len(batch))
+		for i, r := range batch {
+			placeholders[i] = "?"
+			args[i] = r
+		}
+		rows, err := fs.db.Query("SELECT resource, `key`, `value` FROM metadata WHERE resource IN ("+strings.Join(placeholders, ",")+")", args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var resource, key, value string
+			if err := rows.Scan(&resource, &key, &value); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			if out[resource] == nil {
+				out[resource] = map[string]string{}
+			}
+			out[resource][key] = value
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		_ = rows.Close()
+	}
+	return out, nil
 }
 
 func (fs *localfs) addToReferencesDB(ctx context.Context, resource, target string) error {

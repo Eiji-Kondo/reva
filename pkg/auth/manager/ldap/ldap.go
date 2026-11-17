@@ -126,7 +126,7 @@ func (am *mgr) Authenticate(ctx context.Context, clientID, clientSecret string) 
 	if err != nil {
 		return nil, nil, errors.Wrap(err, "error creating ldap connection")
 	}
-	defer l.Close()
+	defer utils.PutLDAPConnection(&am.c.LDAPConn, l)
 
 	// Search for the given clientID
 	searchRequest := ldap.NewSearchRequest(
@@ -149,8 +149,9 @@ func (am *mgr) Authenticate(ctx context.Context, clientID, clientSecret string) 
 
 	userdn := sr.Entries[0].DN
 
-	// Bind as the user to verify their password
-	err = l.Bind(userdn, clientSecret)
+	// Bind as the user to verify their password. Use BindLDAPUser so the pool
+	// knows to restore the admin bind when this connection is returned.
+	err = utils.BindLDAPUser(l, userdn, clientSecret)
 	if err != nil {
 		log.Debug().Err(err).Interface("userdn", userdn).Msg("bind with user credentials failed")
 		return nil, nil, errors.Wrapf(err, "error binding with user credentials for user %s", userdn)

@@ -469,6 +469,16 @@ func (fs *localfs) permissionSet(ctx context.Context, owner *userpb.UserId, reso
 }
 
 func (fs *localfs) normalize(ctx context.Context, fi os.FileInfo, fn string, mdKeys []string) (*provider.ResourceInfo, error) {
+	metadata, err := fs.retrieveArbitraryMetadata(ctx, fn, mdKeys)
+	if err != nil {
+		return nil, err
+	}
+	return fs.normalizeWithMetadata(ctx, fi, fn, metadata)
+}
+
+// normalizeWithMetadata is normalize() with the arbitrary metadata already
+// resolved, so a directory listing can fetch it for all children at once.
+func (fs *localfs) normalizeWithMetadata(ctx context.Context, fi os.FileInfo, fn string, metadata *provider.ArbitraryMetadata) (*provider.ResourceInfo, error) {
 	log := appctx.GetLogger(ctx)
 	fp := fs.unwrap(ctx, fn)
 	isForeign, err := fs.isForeignDataPath(ctx, fn)
@@ -481,10 +491,6 @@ func (fs *localfs) normalize(ctx context.Context, fi os.FileInfo, fn string, mdK
 		fp = "/" + foreignResourcePath
 	}
 	owner, err := getUser(ctx)
-	if err != nil {
-		return nil, err
-	}
-	metadata, err := fs.retrieveArbitraryMetadata(ctx, fn, mdKeys)
 	if err != nil {
 		return nil, err
 	}
@@ -601,31 +607,34 @@ func (fs *localfs) retrieveArbitraryMetadata(ctx context.Context, fn string, mdK
 	if err != nil {
 		return nil, errors.Wrap(err, "localfs: error listing metadata")
 	}
+	raw := map[string]string{}
 	var mdKey, mdVal string
-	metadata := map[string]string{}
-
-	mdKeysMap := make(map[string]struct{})
-	for _, k := range mdKeys {
-		mdKeysMap[k] = struct{}{}
-	}
-
-	var returnAllKeys bool
-	if _, ok := mdKeysMap["*"]; len(mdKeys) == 0 || ok {
-		returnAllKeys = true
-	}
-
 	for md.Next() {
 		err = md.Scan(&mdKey, &mdVal)
 		if err != nil {
 			return nil, errors.Wrap(err, "localfs: error scanning db rows")
 		}
-		if _, ok := mdKeysMap[mdKey]; returnAllKeys || ok {
-			metadata[mdKey] = mdVal
+		raw[mdKey] = mdVal
+	}
+	return &provider.ArbitraryMetadata{Metadata: filterMetadata(raw, mdKeys)}, nil
+}
+
+// filterMetadata selects the requested keys from raw metadata. An empty mdKeys
+// or a "*" entry means "return everything".
+func filterMetadata(raw map[string]string, mdKeys []string) map[string]string {
+	mdKeysMap := make(map[string]struct{}, len(mdKeys))
+	for _, k := range mdKeys {
+		mdKeysMap[k] = struct{}{}
+	}
+	_, all := mdKeysMap["*"]
+	returnAllKeys := all || len(mdKeys) == 0
+	metadata := map[string]string{}
+	for k, v := range raw {
+		if _, ok := mdKeysMap[k]; returnAllKeys || ok {
+			metadata[k] = v
 		}
 	}
-	return &provider.ArbitraryMetadata{
-		Metadata: metadata,
-	}, nil
+	return metadata
 }
 
 // GetPathByID returns the path pointed by the file id
@@ -1360,13 +1369,36 @@ func (fs *localfs) listFolder(ctx context.Context, fn string, mdKeys []string) (
 	}
 
 	finfos := []*provider.ResourceInfo{}
+	metaByPath, err := fs.metadataForListing(ctx, fn, mds, mdKeys)
+	if err != nil {
+		return nil, err
+	}
 	for _, md := range mds {
-		info, err := fs.normalize(ctx, md, path.Join(fn, md.Name()), mdKeys)
+		full := path.Join(fn, md.Name())
+		info, err := fs.normalizeWithMetadata(ctx, md, full, metaByPath[full])
 		if err == nil {
 			finfos = append(finfos, info)
 		}
 	}
 	return finfos, nil
+}
+
+// metadataForListing resolves arbitrary metadata for every entry in a directory
+// with a single batched query, returning one ArbitraryMetadata per full path.
+func (fs *localfs) metadataForListing(ctx context.Context, dir string, mds []iofs.FileInfo, mdKeys []string) (map[string]*provider.ArbitraryMetadata, error) {
+	paths := make([]string, 0, len(mds))
+	for _, md := range mds {
+		paths = append(paths, path.Join(dir, md.Name()))
+	}
+	raw, err := fs.getMetadataBatch(ctx, paths)
+	if err != nil {
+		return nil, errors.Wrap(err, "localfs: error listing metadata")
+	}
+	out := make(map[string]*provider.ArbitraryMetadata, len(paths))
+	for _, p := range paths {
+		out[p] = &provider.ArbitraryMetadata{Metadata: filterMetadata(raw[p], mdKeys)}
+	}
+	return out, nil
 }
 
 func (fs *localfs) listShareFolderRoot(ctx context.Context, home string, mdKeys []string) ([]*provider.ResourceInfo, error) {
