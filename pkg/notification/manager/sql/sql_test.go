@@ -25,7 +25,7 @@ import (
 
 	"github.com/cs3org/reva/v3/pkg/notification"
 	sqlmanager "github.com/cs3org/reva/v3/pkg/notification/manager/sql"
-	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/glebarez/go-sqlite"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
@@ -72,7 +72,7 @@ var _ = Describe("SQL manager for notifications", func() {
 		err = testDBFile.Close()
 		Expect(err).ToNot(HaveOccurred())
 
-		db, err = sql.Open("sqlite3", fmt.Sprintf("%v?_foreign_keys=on", testDBFile.Name()))
+		db, err = sql.Open("sqlite", fmt.Sprintf("%v?_pragma=foreign_keys(1)", testDBFile.Name()))
 		Expect(err).ToNot(HaveOccurred())
 		Expect(db).ToNot(BeNil())
 

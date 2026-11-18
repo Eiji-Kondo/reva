@@ -26,8 +26,8 @@ import (
 	"strings"
 
 	// Provides sqlite and MySQL drivers.
+	_ "github.com/glebarez/go-sqlite"
 	_ "github.com/go-sql-driver/mysql"
-	_ "github.com/mattn/go-sqlite3"
 	"github.com/pkg/errors"
 
 	"github.com/cs3org/reva/v3/cmd/revad/pkg/config"
@@ -76,7 +76,7 @@ func openDB(c *Config) (dbDialect, *sql.DB, error) {
 
 func initializeDB(root, dbName string) (*sql.DB, error) {
 	dbPath := path.Join(root, dbName)
-	db, err := sql.Open("sqlite3", dbPath)
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, errors.Wrap(err, "localfs: error opening DB connection")
 	}
