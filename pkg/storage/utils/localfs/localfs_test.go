@@ -634,6 +634,71 @@ func TestListFolderReturnsArbitraryMetadata(t *testing.T) {
 	}
 }
 
+// TestHomeTemplateMemoization pins the per-user memoization of GetHome and
+// getVirtualHome: values must be correct, distinct users must not share an
+// entry, and a user whose template inputs change must be re-expanded rather
+// than served a stale layout.
+func TestHomeTemplateMemoization(t *testing.T) {
+	config := &Config{
+		Root:                t.TempDir(),
+		UserLayout:          "{{.Username}}",
+		VirtualHomeTemplate: "/home/{{.Username}}",
+	}
+	config.ApplyDefaults()
+	db, err := initializeDB(config.Root, "test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	fs := &localfs{conf: config, db: db}
+
+	alice := &userpb.User{
+		Id:       &userpb.UserId{OpaqueId: "alice", Idp: "https://idp.example.test"},
+		Username: "alice",
+	}
+	bob := &userpb.User{
+		Id:       &userpb.UserId{OpaqueId: "bob", Idp: "https://idp.example.test"},
+		Username: "bob",
+	}
+	ctxAlice := appctx.ContextSetUser(context.Background(), alice)
+	ctxBob := appctx.ContextSetUser(context.Background(), bob)
+
+	for i := 0; i < 3; i++ {
+		if got, err := fs.GetHome(ctxAlice); err != nil || got != "alice" {
+			t.Fatalf("GetHome(alice) #%d = %q, %v; want alice", i, got, err)
+		}
+		if got, err := fs.getVirtualHome(ctxAlice); err != nil || got != "/home/alice" {
+			t.Fatalf("getVirtualHome(alice) #%d = %q, %v; want /home/alice", i, got, err)
+		}
+	}
+	if got, err := fs.GetHome(ctxBob); err != nil || got != "bob" {
+		t.Fatalf("GetHome(bob) = %q, %v; want bob (cross-user bleed?)", got, err)
+	}
+	if got, err := fs.getVirtualHome(ctxBob); err != nil || got != "/home/bob" {
+		t.Fatalf("getVirtualHome(bob) = %q, %v; want /home/bob (cross-user bleed?)", got, err)
+	}
+	if got, _ := fs.GetHome(ctxAlice); got != "alice" {
+		t.Fatalf("GetHome(alice) after bob = %q; want alice", got)
+	}
+
+	if _, ok := fs.homeCache.Load(userCacheKey(alice)); !ok {
+		t.Errorf("homeCache has no entry for alice")
+	}
+	if _, ok := fs.vhomeCache.Load(userCacheKey(alice)); !ok {
+		t.Errorf("vhomeCache has no entry for alice")
+	}
+
+	// Same Id, changed Username: the key must change so the new layout is used.
+	renamed := &userpb.User{
+		Id:       &userpb.UserId{OpaqueId: "alice", Idp: "https://idp.example.test"},
+		Username: "alice2",
+	}
+	ctxRenamed := appctx.ContextSetUser(context.Background(), renamed)
+	if got, err := fs.GetHome(ctxRenamed); err != nil || got != "alice2" {
+		t.Fatalf("GetHome(renamed) = %q, %v; want alice2 (stale memo?)", got, err)
+	}
+}
+
 // TestFilterMetadata pins the key-selection semantics of the batched path.
 func TestFilterMetadata(t *testing.T) {
 	raw := map[string]string{"a": "1", "b": "2"}
@@ -660,4 +725,3 @@ func TestFilterMetadata(t *testing.T) {
 		})
 	}
 }
-
