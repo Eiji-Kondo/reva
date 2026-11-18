@@ -31,11 +31,11 @@ import (
 	"github.com/cs3org/reva/v3/pkg/rjobs"
 	"github.com/cs3org/reva/v3/pkg/rjobs/store/sql/model"
 	"github.com/cs3org/reva/v3/pkg/utils/dbutil"
+	"github.com/glebarez/sqlite"
 	"github.com/pkg/errors"
 	"gorm.io/datatypes"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
