@@ -601,31 +601,38 @@ func (fs *localfs) retrieveArbitraryMetadata(ctx context.Context, fn string, mdK
 	if err != nil {
 		return nil, errors.Wrap(err, "localfs: error listing metadata")
 	}
+	defer md.Close()
+	raw := map[string]string{}
 	var mdKey, mdVal string
-	metadata := map[string]string{}
-
-	mdKeysMap := make(map[string]struct{})
-	for _, k := range mdKeys {
-		mdKeysMap[k] = struct{}{}
-	}
-
-	var returnAllKeys bool
-	if _, ok := mdKeysMap["*"]; len(mdKeys) == 0 || ok {
-		returnAllKeys = true
-	}
-
 	for md.Next() {
 		err = md.Scan(&mdKey, &mdVal)
 		if err != nil {
 			return nil, errors.Wrap(err, "localfs: error scanning db rows")
 		}
-		if _, ok := mdKeysMap[mdKey]; returnAllKeys || ok {
-			metadata[mdKey] = mdVal
+		raw[mdKey] = mdVal
+	}
+	if err := md.Err(); err != nil {
+		return nil, errors.Wrap(err, "localfs: error iterating db rows")
+	}
+	return &provider.ArbitraryMetadata{Metadata: filterMetadata(raw, mdKeys)}, nil
+}
+
+// filterMetadata selects the requested keys from raw metadata. An empty mdKeys
+// or a "*" entry means "return everything".
+func filterMetadata(raw map[string]string, mdKeys []string) map[string]string {
+	mdKeysMap := make(map[string]struct{}, len(mdKeys))
+	for _, k := range mdKeys {
+		mdKeysMap[k] = struct{}{}
+	}
+	_, all := mdKeysMap["*"]
+	returnAllKeys := all || len(mdKeys) == 0
+	metadata := map[string]string{}
+	for k, v := range raw {
+		if _, ok := mdKeysMap[k]; returnAllKeys || ok {
+			metadata[k] = v
 		}
 	}
-	return &provider.ArbitraryMetadata{
-		Metadata: metadata,
-	}, nil
+	return metadata
 }
 
 // GetPathByID returns the path pointed by the file id
@@ -680,6 +687,7 @@ func (fs *localfs) ListGrants(ctx context.Context, ref *provider.Reference) ([]*
 	if err != nil {
 		return nil, errors.Wrap(err, "localfs: error listing grants")
 	}
+	defer g.Close()
 	var granteeID, role string
 	var grantList []*provider.Grant
 
@@ -702,6 +710,9 @@ func (fs *localfs) ListGrants(ctx context.Context, ref *provider.Reference) ([]*
 			Grantee:     grantee,
 			Permissions: permissions,
 		})
+	}
+	if err := g.Err(); err != nil {
+		return nil, errors.Wrap(err, "localfs: error iterating db rows")
 	}
 	return grantList, nil
 }

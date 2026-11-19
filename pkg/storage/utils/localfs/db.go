@@ -47,6 +47,13 @@ const (
 	dialectPostgres
 )
 
+const (
+	// One short query at a time per request. A handful of connections covers
+	// concurrent Stat calls; more only adds contention on sqlite locks.
+	maxOpenConns = 8
+	maxIdleConns = 8
+)
+
 // openDB opens the localfs metadata DB. When the engine is unset it follows the
 // shared DB engine, so a deployment that moves [shared] to mysql moves localfs
 // too. An unset or sqlite engine keeps the embedded per-root sqlite file.
@@ -62,7 +69,11 @@ func openDB(c *Config) (dbDialect, *sql.DB, error) {
 			dbName = "localhomefs.db"
 		}
 		db, err := initializeDB(c.Root, dbName)
-		return dialectSQLite, db, err
+		if err != nil {
+			return dialectSQLite, nil, err
+		}
+		setPoolLimits(db)
+		return dialectSQLite, db, nil
 	}
 
 	info := sharedconf.GetDBInfo(config.Database{
@@ -78,7 +89,22 @@ func openDB(c *Config) (dbDialect, *sql.DB, error) {
 		return dialectPostgres, db, err
 	}
 	db, err := initializeMySQLDB(info)
-	return dialectMySQL, db, err
+	if err != nil {
+		return dialectMySQL, nil, err
+	}
+	setPoolLimits(db)
+	return dialectMySQL, db, nil
+}
+
+// setPoolLimits bounds the connection pool. database/sql puts no finalizer on
+// Rows and only Rows.close releases the connection, so an abandoned result set
+// holds a connection until the process exits. Uncapped, one leak path can take
+// the service down: on a deployment this showed up as MariaDB answering 1040
+// Too many connections to every client, which failed authentication and turned
+// every request into a 401. The cap bounds the damage instead.
+func setPoolLimits(db *sql.DB) {
+	db.SetMaxOpenConns(maxOpenConns)
+	db.SetMaxIdleConns(maxIdleConns)
 }
 
 func initializeDB(root, dbName string) (*sql.DB, error) {
