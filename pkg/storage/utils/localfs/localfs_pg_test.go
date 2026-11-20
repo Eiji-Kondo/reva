@@ -3,6 +3,8 @@ package localfs
 import (
 	"database/sql"
 	"os"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/cs3org/reva/v3/cmd/revad/pkg/config"
@@ -165,17 +167,34 @@ func TestPostgresShareReferences(t *testing.T) {
 	}
 }
 
-func TestPostgresOpenDB(t *testing.T) {
-	pgDSN(t)
-	cfg := &Config{
-		Root:       t.TempDir(),
-		DBEngine:   "postgres",
-		DBHost:     "127.0.0.1",
-		DBPort:     5432,
-		DBUsername: "postgres",
-		DBPassword: "test",
-		DBName:     "reva",
+// pgConfig derives the connection settings from REVA_TEST_POSTGRES so the test
+// does not depend on a fixed credential pair on the server.
+func pgConfig(t *testing.T) *Config {
+	t.Helper()
+	cfg := &Config{Root: t.TempDir(), DBEngine: "postgres", DBPort: 5432}
+	for kv := range strings.SplitSeq(pgDSN(t), " ") {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "host":
+			cfg.DBHost = v
+		case "port":
+			cfg.DBPort, _ = strconv.Atoi(v)
+		case "user":
+			cfg.DBUsername = v
+		case "password":
+			cfg.DBPassword = v
+		case "dbname":
+			cfg.DBName = v
+		}
 	}
+	return cfg
+}
+
+func TestPostgresOpenDB(t *testing.T) {
+	cfg := pgConfig(t)
 	dialect, db, err := openDB(cfg)
 	if err != nil {
 		t.Fatalf("openDB: %v", err)
