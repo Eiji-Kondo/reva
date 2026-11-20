@@ -26,6 +26,7 @@ import (
 	typespb "github.com/cs3org/go-cs3apis/cs3/types/v1beta1"
 	"github.com/cs3org/reva/v3/pkg/errtypes"
 	"github.com/go-sql-driver/mysql"
+	"github.com/jackc/pgx/v5/pgconn"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -39,6 +40,10 @@ func isDuplicateKeyErr(err error) bool {
 	var myErr *mysql.MySQLError
 	if errors.As(err, &myErr) {
 		return myErr.Number == 1062
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23505" // unique_violation
 	}
 	return strings.Contains(err.Error(), "UNIQUE constraint failed")
 }
@@ -71,12 +76,12 @@ func (fs *localfs) lockResourcePath(ctx context.Context, ref *provider.Reference
 func (fs *localfs) getLocksAtPath(ctx context.Context, resourcePath string) ([]*provider.Lock, error) {
 	now := time.Now().UnixNano()
 	if _, err := fs.db.ExecContext(ctx,
-		"DELETE FROM resource_locks WHERE resource=? AND expires_at<=?", resourcePath, now,
+		fs.q("DELETE FROM resource_locks WHERE resource=? AND expires_at<=?"), resourcePath, now,
 	); err != nil {
 		return nil, err
 	}
 	rows, err := fs.db.QueryContext(ctx,
-		"SELECT lock_json FROM resource_locks WHERE resource=? ORDER BY lock_id", resourcePath,
+		fs.q("SELECT lock_json FROM resource_locks WHERE resource=? ORDER BY lock_id"), resourcePath,
 	)
 	if err != nil {
 		return nil, err
@@ -156,12 +161,12 @@ func (fs *localfs) SetLock(ctx context.Context, ref *provider.Reference, lock *p
 	defer tx.Rollback()
 	now := time.Now().UnixNano()
 	if _, err := tx.ExecContext(ctx,
-		"DELETE FROM resource_locks WHERE resource=? AND expires_at<=?", resourcePath, now,
+		fs.q("DELETE FROM resource_locks WHERE resource=? AND expires_at<=?"), resourcePath, now,
 	); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx,
-		"INSERT INTO resource_locks (resource, lock_id, lock_json, expires_at) VALUES (?, ?, ?, ?)",
+		fs.q("INSERT INTO resource_locks (resource, lock_id, lock_json, expires_at) VALUES (?, ?, ?, ?)"),
 		resourcePath, lock.GetLockId(), string(lockJSON), expiresAt,
 	); err != nil {
 		if isDuplicateKeyErr(err) {
@@ -171,7 +176,7 @@ func (fs *localfs) SetLock(ctx context.Context, ref *provider.Reference, lock *p
 	}
 
 	rows, err := tx.QueryContext(ctx,
-		"SELECT lock_id, lock_json FROM resource_locks WHERE resource=? AND lock_id<>?",
+		fs.q("SELECT lock_id, lock_json FROM resource_locks WHERE resource=? AND lock_id<>?"),
 		resourcePath, lock.GetLockId(),
 	)
 	if err != nil {
@@ -232,7 +237,7 @@ func (fs *localfs) RefreshLock(ctx context.Context, ref *provider.Reference, loc
 func (fs *localfs) getLockByID(ctx context.Context, resourcePath, lockID string) (*provider.Lock, error) {
 	var lockJSON string
 	err := fs.db.QueryRowContext(ctx,
-		"SELECT lock_json FROM resource_locks WHERE resource=? AND lock_id=? AND expires_at>?",
+		fs.q("SELECT lock_json FROM resource_locks WHERE resource=? AND lock_id=? AND expires_at>?"),
 		resourcePath, lockID, time.Now().UnixNano(),
 	).Scan(&lockJSON)
 	if err != nil {
@@ -255,7 +260,7 @@ func (fs *localfs) replaceLock(ctx context.Context, resourcePath string, current
 		return err
 	}
 	result, err := fs.db.ExecContext(ctx,
-		"UPDATE resource_locks SET lock_json=?, expires_at=? WHERE resource=? AND lock_id=? AND expires_at>?",
+		fs.q("UPDATE resource_locks SET lock_json=?, expires_at=? WHERE resource=? AND lock_id=? AND expires_at>?"),
 		string(lockJSON), expiresAt, resourcePath, current.GetLockId(), time.Now().UnixNano(),
 	)
 	if err != nil {
@@ -287,7 +292,7 @@ func (fs *localfs) Unlock(ctx context.Context, ref *provider.Reference, lock *pr
 		return errtypes.BadRequest("localfs: lock holder does not match")
 	}
 	result, err := fs.db.ExecContext(ctx,
-		"DELETE FROM resource_locks WHERE resource=? AND lock_id=? AND expires_at>?",
+		fs.q("DELETE FROM resource_locks WHERE resource=? AND lock_id=? AND expires_at>?"),
 		resourcePath, lock.GetLockId(), time.Now().UnixNano(),
 	)
 	if err != nil {

@@ -37,9 +37,11 @@ import (
 	"github.com/cs3org/reva/v3/pkg/sharedconf"
 	"github.com/cs3org/reva/v3/pkg/spaces"
 	"github.com/cs3org/reva/v3/pkg/utils/cfg"
+	"github.com/cs3org/reva/v3/pkg/utils/dbutil"
 	"github.com/pkg/errors"
 	"gorm.io/datatypes"
 	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -122,12 +124,18 @@ func New(ctx context.Context, m map[string]any) (projects.Catalogue, error) {
 	switch c.Engine {
 	case "sqlite":
 		db, err = gorm.Open(sqlite.Open(c.DBName), &gorm.Config{})
+	case "postgres":
+		dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable", c.DBHost, c.DBPort, c.DBUsername, c.DBPassword, c.DBName)
+		db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	case "mysql":
 		dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true", c.DBUsername, c.DBPassword, c.DBHost, c.DBPort, c.DBName)
 		db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
 	default: // default is mysql
 		dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true", c.DBUsername, c.DBPassword, c.DBHost, c.DBPort, c.DBName)
 		db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	}
+	if err := dbutil.ConfigurePool(db); err != nil {
+		return nil, errors.Wrap(err, "failed to configure DB connection pool")
 	}
 	if err != nil {
 		return nil, errors.Wrap(err, "Failed to connect to Projects database using engine "+c.Engine)

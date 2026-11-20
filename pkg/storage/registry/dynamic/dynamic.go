@@ -78,7 +78,7 @@ func New(ctx context.Context, m map[string]any) (storage.Registry, error) {
 	log := appctx.GetLogger(ctx)
 	annotatedLog := log.With().Str("storageregistry", "dynamic").Logger()
 
-	rt, err := initRoutingTree(ctx, c.DBUsername, c.DBPassword, c.DBHost, c.DBPort, c.DBName, c.Rules)
+	rt, err := initRoutingTree(ctx, c.Database, c.Rules)
 	if err != nil {
 		return nil, errors.Wrap(err, "error initializing routing tree")
 	}
@@ -99,10 +99,16 @@ func New(ctx context.Context, m map[string]any) (storage.Registry, error) {
 	return d, nil
 }
 
-func initRoutingTree(ctx context.Context, dbUsername, dbPassword, dbHost string, dbPort int, dbName string, rules map[string]string) (*routingtree.RoutingTree, error) {
+func initRoutingTree(ctx context.Context, c config.Database, rules map[string]string) (*routingtree.RoutingTree, error) {
 	log := appctx.GetLogger(ctx).With().Str("storageregistry", "dynamic").Logger()
 
-	db, err := sql.Open("mysql", fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", dbUsername, dbPassword, dbHost, dbPort, dbName))
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", c.DBUsername, c.DBPassword, c.DBHost, c.DBPort, c.DBName)
+	driver := "mysql"
+	if c.Engine == "postgres" {
+		dsn = fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable", c.DBHost, c.DBPort, c.DBUsername, c.DBPassword, c.DBName)
+		driver = "pgx"
+	}
+	db, err := sql.Open(driver, dsn)
 	if err != nil {
 		return nil, errors.Wrap(err, "error opening sql connection")
 	}

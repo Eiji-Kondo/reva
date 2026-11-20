@@ -30,9 +30,11 @@ import (
 	"github.com/cs3org/reva/v3/pkg/errtypes"
 	"github.com/cs3org/reva/v3/pkg/rjobs"
 	"github.com/cs3org/reva/v3/pkg/rjobs/store/sql/model"
+	"github.com/cs3org/reva/v3/pkg/utils/dbutil"
 	"github.com/pkg/errors"
 	"gorm.io/datatypes"
 	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -56,13 +58,27 @@ func New(ctx context.Context, c config.Database) (rjobs.StatusStore, error) {
 
 func openDB(c config.Database) (*gorm.DB, error) {
 	gormCfg := &gorm.Config{}
+	var (
+		db  *gorm.DB
+		err error
+	)
 	switch c.Engine {
 	case "sqlite":
-		return gorm.Open(sqlite.Open(c.DBName), gormCfg)
+		db, err = gorm.Open(sqlite.Open(c.DBName), gormCfg)
+	case "postgres":
+		dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable", c.DBHost, c.DBPort, c.DBUsername, c.DBPassword, c.DBName)
+		db, err = gorm.Open(postgres.Open(dsn), gormCfg)
 	default: // mysql
 		dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true", c.DBUsername, c.DBPassword, c.DBHost, c.DBPort, c.DBName)
-		return gorm.Open(mysql.Open(dsn), gormCfg)
+		db, err = gorm.Open(mysql.Open(dsn), gormCfg)
 	}
+	if err != nil {
+		return nil, err
+	}
+	if err := dbutil.ConfigurePool(db); err != nil {
+		return nil, errors.Wrap(err, "failed to configure DB connection pool")
+	}
+	return db, nil
 }
 
 func (s *store) Put(ctx context.Context, st rjobs.Status) error {

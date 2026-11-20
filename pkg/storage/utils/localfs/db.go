@@ -23,9 +23,12 @@ import (
 	"database/sql"
 	"fmt"
 	"path"
+	"strconv"
+	"strings"
 
-	// Provides sqlite and MySQL drivers.
+	// Provides sqlite, MySQL and PostgreSQL drivers.
 	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/pkg/errors"
 
@@ -41,6 +44,7 @@ type dbDialect int
 const (
 	dialectSQLite dbDialect = iota
 	dialectMySQL
+	dialectPostgres
 )
 
 // openDB opens the localfs metadata DB. When the engine is unset it follows the
@@ -69,6 +73,10 @@ func openDB(c *Config) (dbDialect, *sql.DB, error) {
 		DBPort:     c.DBPort,
 		DBName:     c.DBName,
 	})
+	if engine == "postgres" {
+		db, err := initializePostgresDB(info)
+		return dialectPostgres, db, err
+	}
 	db, err := initializeMySQLDB(info)
 	return dialectMySQL, db, err
 }
@@ -98,6 +106,19 @@ func initializeMySQLDB(info config.Database) (*sql.DB, error) {
 	return db, nil
 }
 
+func initializePostgresDB(info config.Database) (*sql.DB, error) {
+	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
+		info.DBHost, info.DBPort, info.DBUsername, info.DBPassword, info.DBName)
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return nil, errors.Wrap(err, "localfs: error opening PostgreSQL DB connection")
+	}
+	if err := migrate(db, dialectPostgres); err != nil {
+		return nil, err
+	}
+	return db, nil
+}
+
 func migrate(db *sql.DB, dialect dbDialect) error {
 	for _, stmt := range schema(dialect) {
 		if _, err := db.Exec(stmt); err != nil {
@@ -110,7 +131,18 @@ func migrate(db *sql.DB, dialect dbDialect) error {
 // schema returns the DDL for the metadata DB. MySQL/MariaDB needs VARCHAR keys
 // (TEXT cannot be a PRIMARY KEY), backticked reserved words (`key`, `value`) and
 // BIGINT for expires_at (a UnixNano value overflows a 32-bit INTEGER).
+// PostgreSQL accepts TEXT keys and BIGINT directly, but - unlike SQLite -
+// it rejects unquoted reserved words, so key/value are double quoted.
 func schema(dialect dbDialect) []string {
+	if dialect == dialectPostgres {
+		return []string{
+			`CREATE TABLE IF NOT EXISTS recycled_entries (key TEXT PRIMARY KEY, path TEXT)`,
+			`CREATE TABLE IF NOT EXISTS user_interaction (resource TEXT, grantee TEXT, role TEXT DEFAULT '', favorite INTEGER DEFAULT 0, PRIMARY KEY (resource, grantee))`,
+			`CREATE TABLE IF NOT EXISTS metadata (resource TEXT, "key" TEXT, "value" TEXT, PRIMARY KEY (resource, "key"))`,
+			`CREATE TABLE IF NOT EXISTS share_references (resource TEXT PRIMARY KEY, target TEXT)`,
+			`CREATE TABLE IF NOT EXISTS resource_locks (resource TEXT NOT NULL, lock_id TEXT NOT NULL, lock_json TEXT NOT NULL, expires_at BIGINT NOT NULL, PRIMARY KEY (resource, lock_id))`,
+		}
+	}
 	if dialect == dialectMySQL {
 		return []string{
 			"CREATE TABLE IF NOT EXISTS recycled_entries (`key` VARCHAR(255) PRIMARY KEY, path TEXT)",
@@ -129,7 +161,9 @@ func schema(dialect dbDialect) []string {
 	}
 }
 
-// sql picks the statement for the connection's dialect.
+// sql picks the statement for the connection's dialect. PostgreSQL shares
+// the SQLite statements because both implement the standard ON CONFLICT
+// upsert clause.
 func (fs *localfs) sql(sqliteStmt, mysqlStmt string) string {
 	if fs.dialect == dialectMySQL {
 		return mysqlStmt
@@ -137,8 +171,31 @@ func (fs *localfs) sql(sqliteStmt, mysqlStmt string) string {
 	return sqliteStmt
 }
 
+// q adapts a statement to the connection's dialect. PostgreSQL is the only
+// backend that rejects ? placeholders (it wants $1..$N) and backquoted
+// identifiers (it wants double quotes), so the rewrite is a no-op elsewhere.
+func (fs *localfs) q(query string) string {
+	if fs.dialect != dialectPostgres {
+		return query
+	}
+	query = strings.ReplaceAll(query, "`", "\"")
+	var b strings.Builder
+	b.Grow(len(query) + 8)
+	n := 0
+	for i := 0; i < len(query); i++ {
+		if query[i] != '?' {
+			b.WriteByte(query[i])
+			continue
+		}
+		n++
+		b.WriteByte('$')
+		b.WriteString(strconv.Itoa(n))
+	}
+	return b.String()
+}
+
 func (fs *localfs) addToRecycledDB(ctx context.Context, key, fileName string) error {
-	stmt, err := fs.db.Prepare("INSERT INTO recycled_entries VALUES (?, ?)")
+	stmt, err := fs.db.Prepare(fs.q("INSERT INTO recycled_entries VALUES (?, ?)"))
 	if err != nil {
 		return errors.Wrap(err, "localfs: error preparing statement")
 	}
@@ -151,7 +208,7 @@ func (fs *localfs) addToRecycledDB(ctx context.Context, key, fileName string) er
 
 func (fs *localfs) getRecycledEntry(ctx context.Context, key string) (string, error) {
 	var filePath string
-	err := fs.db.QueryRow("SELECT path FROM recycled_entries WHERE `key`=?", key).Scan(&filePath)
+	err := fs.db.QueryRow(fs.q("SELECT path FROM recycled_entries WHERE `key`=?"), key).Scan(&filePath)
 	if err != nil {
 		return "", err
 	}
@@ -159,7 +216,7 @@ func (fs *localfs) getRecycledEntry(ctx context.Context, key string) (string, er
 }
 
 func (fs *localfs) removeFromRecycledDB(ctx context.Context, key string) error {
-	stmt, err := fs.db.Prepare("DELETE FROM recycled_entries WHERE `key`=?")
+	stmt, err := fs.db.Prepare(fs.q("DELETE FROM recycled_entries WHERE `key`=?"))
 	if err != nil {
 		return errors.Wrap(err, "localfs: error preparing statement")
 	}
@@ -171,9 +228,9 @@ func (fs *localfs) removeFromRecycledDB(ctx context.Context, key string) error {
 }
 
 func (fs *localfs) addToACLDB(ctx context.Context, resource, grantee, role string) error {
-	stmt, err := fs.db.Prepare(fs.sql(
+	stmt, err := fs.db.Prepare(fs.q(fs.sql(
 		"INSERT INTO user_interaction (resource, grantee, role) VALUES (?, ?, ?) ON CONFLICT(resource, grantee) DO UPDATE SET role=?",
-		"INSERT INTO user_interaction (resource, grantee, role) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE role=?"))
+		"INSERT INTO user_interaction (resource, grantee, role) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE role=?")))
 	if err != nil {
 		return errors.Wrap(err, "localfs: error preparing statement")
 	}
@@ -185,7 +242,7 @@ func (fs *localfs) addToACLDB(ctx context.Context, resource, grantee, role strin
 }
 
 func (fs *localfs) getACLs(ctx context.Context, resource string) (*sql.Rows, error) {
-	grants, err := fs.db.Query("SELECT grantee, role FROM user_interaction WHERE resource=?", resource)
+	grants, err := fs.db.Query(fs.q("SELECT grantee, role FROM user_interaction WHERE resource=?"), resource)
 	if err != nil {
 		return nil, err
 	}
@@ -193,7 +250,7 @@ func (fs *localfs) getACLs(ctx context.Context, resource string) (*sql.Rows, err
 }
 
 func (fs *localfs) removeFromACLDB(ctx context.Context, resource, grantee string) error {
-	stmt, err := fs.db.Prepare("UPDATE user_interaction SET role='' WHERE resource=? AND grantee=?")
+	stmt, err := fs.db.Prepare(fs.q("UPDATE user_interaction SET role='' WHERE resource=? AND grantee=?"))
 	if err != nil {
 		return errors.Wrap(err, "localfs: error preparing statement")
 	}
@@ -205,9 +262,9 @@ func (fs *localfs) removeFromACLDB(ctx context.Context, resource, grantee string
 }
 
 func (fs *localfs) addToFavoritesDB(ctx context.Context, resource, grantee string) error {
-	stmt, err := fs.db.Prepare(fs.sql(
+	stmt, err := fs.db.Prepare(fs.q(fs.sql(
 		"INSERT INTO user_interaction (resource, grantee, favorite) VALUES (?, ?, 1) ON CONFLICT(resource, grantee) DO UPDATE SET favorite=1",
-		"INSERT INTO user_interaction (resource, grantee, favorite) VALUES (?, ?, 1) ON DUPLICATE KEY UPDATE favorite=1"))
+		"INSERT INTO user_interaction (resource, grantee, favorite) VALUES (?, ?, 1) ON DUPLICATE KEY UPDATE favorite=1")))
 	if err != nil {
 		return errors.Wrap(err, "localfs: error preparing statement")
 	}
@@ -219,7 +276,7 @@ func (fs *localfs) addToFavoritesDB(ctx context.Context, resource, grantee strin
 }
 
 func (fs *localfs) removeFromFavoritesDB(ctx context.Context, resource, grantee string) error {
-	stmt, err := fs.db.Prepare("UPDATE user_interaction SET favorite=0 WHERE resource=? AND grantee=?")
+	stmt, err := fs.db.Prepare(fs.q("UPDATE user_interaction SET favorite=0 WHERE resource=? AND grantee=?"))
 	if err != nil {
 		return errors.Wrap(err, "localfs: error preparing statement")
 	}
@@ -231,9 +288,9 @@ func (fs *localfs) removeFromFavoritesDB(ctx context.Context, resource, grantee 
 }
 
 func (fs *localfs) addToMetadataDB(ctx context.Context, resource, key, value string) error {
-	stmt, err := fs.db.Prepare(fs.sql(
+	stmt, err := fs.db.Prepare(fs.q(fs.sql(
 		"INSERT INTO metadata (resource, `key`, `value`) VALUES (?, ?, ?) ON CONFLICT(resource, `key`) DO UPDATE SET `value`=?",
-		"INSERT INTO metadata (resource, `key`, `value`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `value`=?"))
+		"INSERT INTO metadata (resource, `key`, `value`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `value`=?")))
 	if err != nil {
 		return errors.Wrap(err, "localfs: error preparing statement")
 	}
@@ -245,7 +302,7 @@ func (fs *localfs) addToMetadataDB(ctx context.Context, resource, key, value str
 }
 
 func (fs *localfs) removeFromMetadataDB(ctx context.Context, resource, key string) error {
-	stmt, err := fs.db.Prepare("DELETE FROM metadata WHERE resource=? AND `key`=?")
+	stmt, err := fs.db.Prepare(fs.q("DELETE FROM metadata WHERE resource=? AND `key`=?"))
 	if err != nil {
 		return errors.Wrap(err, "localfs: error preparing statement")
 	}
@@ -257,7 +314,7 @@ func (fs *localfs) removeFromMetadataDB(ctx context.Context, resource, key strin
 }
 
 func (fs *localfs) getMetadata(ctx context.Context, resource string) (*sql.Rows, error) {
-	grants, err := fs.db.Query("SELECT `key`, `value` FROM metadata WHERE resource=?", resource)
+	grants, err := fs.db.Query(fs.q("SELECT `key`, `value` FROM metadata WHERE resource=?"), resource)
 	if err != nil {
 		return nil, err
 	}
@@ -265,9 +322,9 @@ func (fs *localfs) getMetadata(ctx context.Context, resource string) (*sql.Rows,
 }
 
 func (fs *localfs) addToReferencesDB(ctx context.Context, resource, target string) error {
-	stmt, err := fs.db.Prepare(fs.sql(
+	stmt, err := fs.db.Prepare(fs.q(fs.sql(
 		"INSERT INTO share_references (resource, target) VALUES (?, ?) ON CONFLICT(resource) DO UPDATE SET target=?",
-		"INSERT INTO share_references (resource, target) VALUES (?, ?) ON DUPLICATE KEY UPDATE target=?"))
+		"INSERT INTO share_references (resource, target) VALUES (?, ?) ON DUPLICATE KEY UPDATE target=?")))
 	if err != nil {
 		return errors.Wrap(err, "localfs: error preparing statement")
 	}
@@ -280,7 +337,7 @@ func (fs *localfs) addToReferencesDB(ctx context.Context, resource, target strin
 
 func (fs *localfs) getReferenceEntry(ctx context.Context, resource string) (string, error) {
 	var target string
-	err := fs.db.QueryRow("SELECT target FROM share_references WHERE resource=?", resource).Scan(&target)
+	err := fs.db.QueryRow(fs.q("SELECT target FROM share_references WHERE resource=?"), resource).Scan(&target)
 	if err != nil {
 		return "", err
 	}
@@ -288,7 +345,7 @@ func (fs *localfs) getReferenceEntry(ctx context.Context, resource string) (stri
 }
 
 func (fs *localfs) copyMD(s string, t string) (err error) {
-	stmt, err := fs.db.Prepare("UPDATE user_interaction SET resource=? WHERE resource=?")
+	stmt, err := fs.db.Prepare(fs.q("UPDATE user_interaction SET resource=? WHERE resource=?"))
 	if err != nil {
 		return errors.Wrap(err, "localfs: error preparing statement")
 	}
@@ -297,7 +354,7 @@ func (fs *localfs) copyMD(s string, t string) (err error) {
 		return errors.Wrap(err, "localfs: error executing delete statement")
 	}
 
-	stmt, err = fs.db.Prepare("UPDATE metadata SET resource=? WHERE resource=?")
+	stmt, err = fs.db.Prepare(fs.q("UPDATE metadata SET resource=? WHERE resource=?"))
 	if err != nil {
 		return errors.Wrap(err, "localfs: error preparing statement")
 	}
@@ -306,7 +363,7 @@ func (fs *localfs) copyMD(s string, t string) (err error) {
 		return errors.Wrap(err, "localfs: error executing delete statement")
 	}
 
-	stmt, err = fs.db.Prepare("UPDATE share_references SET resource=? WHERE resource=?")
+	stmt, err = fs.db.Prepare(fs.q("UPDATE share_references SET resource=? WHERE resource=?"))
 	if err != nil {
 		return errors.Wrap(err, "localfs: error preparing statement")
 	}
