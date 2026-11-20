@@ -86,7 +86,11 @@ func openDB(c *Config) (dbDialect, *sql.DB, error) {
 	})
 	if engine == "postgres" {
 		db, err := initializePostgresDB(info)
-		return dialectPostgres, db, err
+		if err != nil {
+			return dialectPostgres, nil, err
+		}
+		setPoolLimits(db)
+		return dialectPostgres, db, nil
 	}
 	db, err := initializeMySQLDB(info)
 	if err != nil {

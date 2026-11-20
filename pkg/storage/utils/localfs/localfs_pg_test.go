@@ -206,3 +206,22 @@ func TestPostgresOpenDB(t *testing.T) {
 }
 
 var _ = config.Database{}
+
+// TestPostgresPoolIsBounded pins the pool cap on the postgres branch. That
+// branch used to return before setPoolLimits, so switching an installation from
+// mysql to postgres silently dropped the cap that keeps a leaked result set
+// from exhausting the server's connection slots.
+func TestPostgresPoolIsBounded(t *testing.T) {
+	pgDSN(t)
+	c := &Config{Root: t.TempDir(), DBEngine: "postgres", DBHost: "127.0.0.1",
+		DBPort: 5432, DBUsername: "reva", DBPassword: "revatest", DBName: "reva"}
+	_, db, err := openDB(c)
+	if err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	if got := db.Stats().MaxOpenConnections; got != maxOpenConns {
+		t.Errorf("MaxOpenConnections = %d, want %d", got, maxOpenConns)
+	}
+}
