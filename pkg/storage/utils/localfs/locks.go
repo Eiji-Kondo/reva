@@ -26,6 +26,7 @@ import (
 	typespb "github.com/cs3org/go-cs3apis/cs3/types/v1beta1"
 	"github.com/cs3org/reva/v3/pkg/errtypes"
 	"github.com/go-sql-driver/mysql"
+	"google.golang.org/protobuf/proto"
 )
 
 const lockSetOpaqueKey = "reva-localfs-lock-set"
@@ -120,13 +121,13 @@ func (fs *localfs) GetLock(ctx context.Context, ref *provider.Reference) (*provi
 	if err != nil {
 		return nil, err
 	}
-	first := *locks[0]
+	first := proto.Clone(locks[0]).(*provider.Lock)
 	first.Opaque = &typespb.Opaque{
 		Map: map[string]*typespb.OpaqueEntry{
 			lockSetOpaqueKey: {Decoder: "plain", Value: lockSetJSON},
 		},
 	}
-	return &first, nil
+	return first, nil
 }
 
 func (fs *localfs) SetLock(ctx context.Context, ref *provider.Reference, lock *provider.Lock) error {
@@ -303,7 +304,7 @@ func (fs *localfs) Unlock(ctx context.Context, ref *provider.Reference, lock *pr
 }
 
 func normalizedLock(lock *provider.Lock) (*provider.Lock, int64) {
-	stored := *lock
+	stored := proto.Clone(lock).(*provider.Lock)
 	expiresAt := int64(lock.GetExpiration().GetSeconds())*int64(time.Second) +
 		int64(lock.GetExpiration().GetNanos())
 	if lock.GetExpiration() == nil {
@@ -314,7 +315,7 @@ func normalizedLock(lock *provider.Lock) (*provider.Lock, int64) {
 			Nanos:   uint32(expiration.Nanosecond()),
 		}
 	}
-	return &stored, expiresAt
+	return stored, expiresAt
 }
 
 func sameLockHolder(a, b *provider.Lock) bool {
