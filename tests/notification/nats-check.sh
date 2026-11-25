@@ -121,8 +121,15 @@ echo "== 5. reva stream + template bucket =="
 # device gets no extra package.
 JSOK=0
 for _ in $(seq 1 15); do
-  if curl -fsS -X POST "http://127.0.0.1:$HTTP_PORT/healthz" >/dev/null 2>&1; then JSOK=1; fi
-  curl -fsS "http://127.0.0.1:$HTTP_PORT/jsz?streams=1" | grep -q '"streams"' && { JSOK=1; break; }
+  # A server with JetStream off still answers /jsz with HTTP 200 and a
+  # max_storage key (value 0), so neither is proof. Only the absence of
+  # "disabled": true means JetStream is actually running.
+  BODY="$(curl -fsS "http://127.0.0.1:$HTTP_PORT/jsz" 2>/dev/null)"
+  if printf '%s' "$BODY" | grep -q '"max_storage"' &&
+     ! printf '%s' "$BODY" | grep -q '"disabled": *true'; then
+    JSOK=1
+    break
+  fi
   sleep 1
 done
 echo "   jetstream reachable: $([ "$JSOK" = "1" ] && echo yes || echo NO)"
@@ -169,7 +176,7 @@ rm -f "$CONF"
 
 echo "== 8. final state =="
 echo "   nats-server installed: $(dpkg-query -W -f='${Version}' nats-server 2>/dev/null || echo no)"
-echo "   nats-server running:   $(pgrep -c nats-server 2>/dev/null || echo 0) process(es)"
+echo "   nats-server running:   $(pgrep -c nats-server 2>/dev/null; true) process(es)"
 echo "   swap used:             $(awk '/SwapTotal/{t=$2} /SwapFree/{f=$2} END{printf "%.0f", (t-f)/1024}' /proc/meminfo) MiB"
 echo "   MemAvailable:          $(awk '/MemAvailable/{printf "%.0f", $2/1024}' /proc/meminfo) MiB"
 echo "   revad:                 $(systemctl is-active revad 2>/dev/null || echo unknown)"
