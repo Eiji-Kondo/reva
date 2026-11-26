@@ -72,9 +72,9 @@ type attributes struct {
 	Mail string `mapstructure:"mail"`
 	// Displayname is the Human readable name, e.g. `Database Admins`
 	DisplayName string `mapstructure:"displayName"`
-	// GIDNumber is a numeric id that maps to a filesystem gid, eg. 654321  
-	GIDNumber string `mapstructure:"gidNumber"`  
-	// Username is the attribute on a user entry used as member id, typically `uid`  
+	// GIDNumber is a numeric id that maps to a filesystem gid, eg. 654321
+	GIDNumber string `mapstructure:"gidNumber"`
+	// Username is the attribute on a user entry used as member id, typically `uid`
 	Username string `mapstructure:"username"`
 }
 
@@ -100,9 +100,9 @@ func New(ctx context.Context, m map[string]any) (group.Manager, error) {
 	if c.FindFilter == "" {
 		c.FindFilter = c.GroupFilter
 	}
-	c.MemberFilter = strings.ReplaceAll(c.MemberFilter, "%s", "{{.OpaqueId}}")  
-	if c.Schema.Username == "" {  
-		c.Schema.Username = c.Schema.CN  
+	c.MemberFilter = strings.ReplaceAll(c.MemberFilter, "%s", "{{.OpaqueId}}")
+	if c.Schema.Username == "" {
+		c.Schema.Username = c.Schema.CN
 	}
 
 	mgr := &manager{
@@ -241,14 +241,14 @@ func (m *manager) GetGroupByClaim(ctx context.Context, claim, value string, skip
 		}
 	}
 
-	gidNumber := m.c.Nobody  
-	gidValue := sr.Entries[0].GetEqualFoldAttributeValue(m.c.Schema.GIDNumber)  
-	if gidValue != "" {  
-    gidNumber, err = strconv.ParseInt(gidValue, 10, 64)  
-    if err != nil {  
-        return nil, err  
-    }  
-}
+	gidNumber := m.c.Nobody
+	gidValue := sr.Entries[0].GetEqualFoldAttributeValue(m.c.Schema.GIDNumber)
+	if gidValue != "" {
+		gidNumber, err = strconv.ParseInt(gidValue, 10, 64)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	g := &grouppb.Group{
 		Id:          id,
@@ -299,13 +299,13 @@ func (m *manager) FindGroups(ctx context.Context, query string, skipFetchingMemb
 			}
 		}
 
-		gidNumber := m.c.Nobody  
-		gidValue := entry.GetEqualFoldAttributeValue(m.c.Schema.GIDNumber)  
-		if gidValue != "" {  
-			gidNumber, err = strconv.ParseInt(gidValue, 10, 64)  
-			if err != nil {  
-				return nil, err  
-			}  
+		gidNumber := m.c.Nobody
+		gidValue := entry.GetEqualFoldAttributeValue(m.c.Schema.GIDNumber)
+		if gidValue != "" {
+			gidNumber, err = strconv.ParseInt(gidValue, 10, 64)
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		g := &grouppb.Group{

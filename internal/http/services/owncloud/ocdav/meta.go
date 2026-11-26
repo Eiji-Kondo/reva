@@ -22,7 +22,7 @@ import (
 	"net/http"
 	"net/url" // 追記
 	"strings" // ← これを追加
-	
+
 	"github.com/cs3org/reva/v3/pkg/appctx"
 	"github.com/cs3org/reva/v3/pkg/rhttp/router"
 	"github.com/cs3org/reva/v3/pkg/spaces"
@@ -46,51 +46,51 @@ func (h *MetaHandler) Handler(s *svc) http.Handler {
 
 		// 👈 ここから書き換える
 		// エンコードが維持された生のパス（/remote.php/dav/meta/...）を取得
-		rawPath := r.URL.RawPath  
-		if rawPath == "" {  
-		    rawPath = r.URL.Path // フォールバック(エンコード文字がない場合、RawPathは空になる)  
-		}  
+		rawPath := r.URL.RawPath
+		if rawPath == "" {
+			rawPath = r.URL.Path // フォールバック(エンコード文字がない場合、RawPathは空になる)
+		}
 
 		log.Debug().Str("raw_path", rawPath).Msg("meta: debug")
-		  
-		const metaMarker = "/meta/"  
-		idx := strings.Index(rawPath, metaMarker)  
-		if idx == -1 {  
-		    http.Error(w, "400 Bad Request", http.StatusBadRequest)  
-		    return  
-		}  
-		afterMeta := rawPath[idx+len(metaMarker):] // 例: "localfs%24...%21fileid-%2Ftest.txt/v/"  
-		  
-		var id string  
-		id, remainingRawPath := router.ShiftPath(afterMeta) // "/"区切りの最初のセグメントを取得  
-		  
-		decodedID, err := url.PathUnescape(id)  
-		if err != nil {  
-		    http.Error(w, "400 Bad Request", http.StatusBadRequest)  
-		    return  
-		}  
-		  
-		rid, ok := spaces.ParseResourceID(decodedID)  
-		if !ok {  
-		    var err error  
-		    rid, err = spaces.ResourceIdFromString(decodedID)  
-		    if err != nil {  
-		        http.Error(w, "400 Bad Request", http.StatusBadRequest)  
-		        return  
-		    }  
-		}  
-		  
-		// 残りのパス(v/など)を書き戻す  
-		r.URL.Path = remainingRawPath  
-		r.URL.RawPath = remainingRawPath  
-		  
-		var head string  
-		head, r.URL.Path = router.ShiftPath(r.URL.Path)  
-		switch head {  
-		case "v":  
-		    h.VersionsHandler.Handler(s, rid).ServeHTTP(w, r)  
-		default:  
-		    w.WriteHeader(http.StatusNotFound)  
+
+		const metaMarker = "/meta/"
+		idx := strings.Index(rawPath, metaMarker)
+		if idx == -1 {
+			http.Error(w, "400 Bad Request", http.StatusBadRequest)
+			return
+		}
+		afterMeta := rawPath[idx+len(metaMarker):] // 例: "localfs%24...%21fileid-%2Ftest.txt/v/"
+
+		var id string
+		id, remainingRawPath := router.ShiftPath(afterMeta) // "/"区切りの最初のセグメントを取得
+
+		decodedID, err := url.PathUnescape(id)
+		if err != nil {
+			http.Error(w, "400 Bad Request", http.StatusBadRequest)
+			return
+		}
+
+		rid, ok := spaces.ParseResourceID(decodedID)
+		if !ok {
+			var err error
+			rid, err = spaces.ResourceIdFromString(decodedID)
+			if err != nil {
+				http.Error(w, "400 Bad Request", http.StatusBadRequest)
+				return
+			}
+		}
+
+		// 残りのパス(v/など)を書き戻す
+		r.URL.Path = remainingRawPath
+		r.URL.RawPath = remainingRawPath
+
+		var head string
+		head, r.URL.Path = router.ShiftPath(r.URL.Path)
+		switch head {
+		case "v":
+			h.VersionsHandler.Handler(s, rid).ServeHTTP(w, r)
+		default:
+			w.WriteHeader(http.StatusNotFound)
 		}
 	})
 }

@@ -21,7 +21,6 @@ package permissions
 import (
 	"fmt"
 	provider "github.com/cs3org/go-cs3apis/cs3/storage/provider/v1beta1"
-
 )
 
 // OcsPermissions reflects the CRUD permissions used in the OCS sharing API.
@@ -83,7 +82,7 @@ func OCSFromCS3Permission(p *provider.ResourcePermissions) OcsPermissions {
 	case p.InitiateFileUpload && !p.InitiateFileDownload:
 		return 4
 	case p.InitiateFileUpload:
-	 	return 15
+		return 15
 	case p.InitiateFileDownload:
 		return 1
 	}

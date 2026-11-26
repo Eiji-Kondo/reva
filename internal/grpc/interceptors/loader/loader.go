@@ -22,8 +22,8 @@ import (
 	// Load core GRPC services.
 	_ "github.com/cs3org/reva/v3/internal/grpc/interceptors/audit"
 	_ "github.com/cs3org/reva/v3/internal/grpc/interceptors/noshare"
-	_ "github.com/cs3org/reva/v3/internal/grpc/interceptors/noversions"
 	_ "github.com/cs3org/reva/v3/internal/grpc/interceptors/notrashbin"
+	_ "github.com/cs3org/reva/v3/internal/grpc/interceptors/noversions"
 	_ "github.com/cs3org/reva/v3/internal/grpc/interceptors/readonly"
 	// Add your own service here.
 )
