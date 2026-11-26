@@ -165,3 +165,56 @@ func TestWriteRefreshesTheRootRowWithDisableHome(t *testing.T) {
 	require.Equal(t, onDisk, afterMtime, "the root row must be re-read from disk after a write below it")
 	require.NotEqual(t, beforeEtag, afterEtag, "the root eTag is the drive eTag under disable_home and must move")
 }
+
+// TestWriteRefreshesEveryAncestor: localfs.propagate walks Chtimes to the root,
+// so an upload two levels down moves the root row too. Before FinishUpload
+// propagated, an upload only moved its direct parent on disk and the drive eTag
+// of a client watching the home never moved.
+func TestWriteRefreshesEveryAncestor(t *testing.T) {
+	drv := newTestFSWith(t, map[string]any{
+		"root":         t.TempDir(),
+		"disable_home": true,
+		"auto_sync":    true,
+	})
+	ctx := testCtx(t)
+	require.NoError(t, drv.syncPath(ctx, "/"))
+	require.NoError(t, drv.CreateDir(ctx, &provider.Reference{Path: "/a"}))
+
+	beforeRoot, _ := cachedRow(t, drv, "/")
+	beforeA, _ := cachedRow(t, drv, "/a")
+	upload(t, drv, "/a/b.txt", "hello")
+	afterRoot, afterRootMtime := cachedRow(t, drv, "/")
+	afterA, afterAMtime := cachedRow(t, drv, "/a")
+
+	rootOnDisk := diskMtimeSec(t, drv, "/")
+	aOnDisk := diskMtimeSec(t, drv, "/a")
+	t.Logf("root: etag %s -> %s; mtime row %d disk %d", beforeRoot, afterRoot, afterRootMtime, rootOnDisk)
+	t.Logf("/a  : etag %s -> %s; mtime row %d disk %d", beforeA, afterA, afterAMtime, aOnDisk)
+	require.Equal(t, rootOnDisk, afterRootMtime, "the root row must be re-read after an upload two levels down")
+	require.NotEqual(t, beforeRoot, afterRoot, "the drive eTag must move on an upload two levels down")
+	require.Equal(t, aOnDisk, afterAMtime, "the parent row must be re-read after an upload")
+	require.NotEqual(t, beforeA, afterA, "the parent eTag must move on an upload")
+}
+
+// TestWriteRefreshesTheHomeRow is the same walk with a real home: the row a
+// client polls is the home, two levels above the destination.
+func TestWriteRefreshesTheHomeRow(t *testing.T) {
+	drv := newTestFSWith(t, map[string]any{
+		"root":      t.TempDir(),
+		"auto_sync": true,
+	})
+	ctx := testCtx(t)
+	require.NoError(t, drv.CreateHome(ctx))
+	home, err := drv.GetHome(ctx)
+	require.NoError(t, err)
+	require.NoError(t, drv.CreateDir(ctx, &provider.Reference{Path: home + "/sub"}))
+
+	beforeHome, _ := cachedRow(t, drv, home)
+	upload(t, drv, home+"/sub/file.txt", "hello")
+	afterHome, afterHomeMtime := cachedRow(t, drv, home)
+
+	onDisk := diskMtimeSec(t, drv, home)
+	t.Logf("%s: etag %s -> %s; mtime row %d disk %d", home, beforeHome, afterHome, afterHomeMtime, onDisk)
+	require.Equal(t, onDisk, afterHomeMtime, "the home row must be re-read after an upload below it")
+	require.NotEqual(t, beforeHome, afterHome, "the home eTag must move on an upload below it")
+}

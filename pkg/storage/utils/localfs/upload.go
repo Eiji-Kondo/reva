@@ -357,8 +357,14 @@ func (upload *fileUpload) FinishUpload(ctx context.Context) error {
 
 	// TODO: set mtime if specified in metadata
 
-	// metadata propagation is left to the storage implementation
-	return err
+	// An upload is a write like CreateDir, Delete and Move: without the Chtimes
+	// walk every directory above the destination keeps its old mtime, so a client
+	// that polls the drive eTag never sees a file that landed deeper than the home.
+	if err := upload.fs.propagate(upload.ctx, np); err != nil {
+		log.Err(err).Str("path", np).Msg("localfs: could not propagate the upload mtime")
+		return err
+	}
+	return nil
 }
 
 // To implement the termination extension as specified in https://tus.io/protocols/resumable-upload.html#termination
