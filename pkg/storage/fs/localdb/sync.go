@@ -172,18 +172,63 @@ func (fs *localdb) purgeSubtree(ctx context.Context, p string) error {
 	return errors.Wrap(err, "localdb: purge subtree")
 }
 
-// upsert writes one row. The file id comes from the inode number, so a rename
-// does not change identity.
+// upsert writes one row and refreshes every container above it. A write below a
+// directory moves that directory's mtime on disk (localfs.propagate walks the
+// path with Chtimes), but the cached rows keep the mtime they were written with,
+// so a client that polls the drive eTag never sees a change below it: measured
+// at 1795678816550043969-4096 across PUT, MKCOL and DELETE while the directory on
+// disk had moved on.
 func (fs *localdb) upsert(ctx context.Context, p string, fi os.FileInfo) error {
+	if err := fs.upsertRow(ctx, p, fi); err != nil {
+		return err
+	}
+	return fs.refreshAncestors(ctx, p)
+}
+
+// refreshAncestors re-reads every directory from p's parent up to the root.
+func (fs *localdb) refreshAncestors(ctx context.Context, p string) error {
+	// The root is included on purpose. With disable_home the caller's home *is* "/",
+	// so it is the drive root a client polls, and stopping below it would leave that
+	// row exactly as stale as the case this function exists to fix.
+	for dir := path.Dir(p); ; dir = path.Dir(dir) {
+		if dir == "." {
+			break
+		}
+		fi, err := os.Lstat(fs.absPath(dir))
+		if err != nil {
+			if os.IsNotExist(err) {
+				if dir == "/" {
+					break
+				}
+				continue
+			}
+			return errors.Wrapf(err, "localdb: stat %s", dir)
+		}
+		if err := fs.upsertRow(ctx, dir, fi); err != nil {
+			return err
+		}
+		if dir == "/" {
+			break
+		}
+	}
+	return nil
+}
+
+// upsertRow writes one row. The file id comes from the inode number, so a rename
+// does not change identity.
+func (fs *localdb) upsertRow(ctx context.Context, p string, fi os.FileInfo) error {
 	parent, name := path.Dir(p), fi.Name()
 	if p == "/" {
 		parent, name = "/", "/"
 	}
+	// Conflict on path, not file_id: a rename in localfs replaces the inode, so
+	// the row has to follow the path to the new inode. Conflict on file_id would
+	// insert a second row for a path that already exists and abort the sync.
 	_, err := fs.db.ExecContext(ctx, fs.q(`
 		INSERT INTO inode (file_id, path, parent, name, size, mtime, etag, is_dir)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT (file_id) DO UPDATE SET
-			path = excluded.path,
+		ON CONFLICT (path) DO UPDATE SET
+			file_id = excluded.file_id,
 			parent = excluded.parent,
 			name = excluded.name,
 			size = excluded.size,

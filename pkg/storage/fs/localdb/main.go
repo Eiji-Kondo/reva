@@ -36,6 +36,9 @@ import (
 	"database/sql"
 	"io"
 	"net/url"
+	"path"
+	"path/filepath"
+	"strings"
 
 	provider "github.com/cs3org/go-cs3apis/cs3/storage/provider/v1beta1"
 	typepb "github.com/cs3org/go-cs3apis/cs3/types/v1beta1"
@@ -46,6 +49,7 @@ import (
 	"github.com/cs3org/reva/v3/pkg/storage/utils/localfs"
 	"github.com/cs3org/reva/v3/pkg/utils/cfg"
 	"github.com/pkg/errors"
+	tusd "github.com/tus/tusd/pkg/handler"
 )
 
 const driverName = "localdb"
@@ -67,6 +71,11 @@ type Config struct {
 
 // localdb keeps the DB authoritative for reads and forwards writes to a
 // localfs instance until Phase 2.
+// uploadStore is the part of localfs that resolves a finished upload id.
+type uploadStore interface {
+	GetUpload(ctx context.Context, id string) (tusd.Upload, error)
+}
+
 type localdb struct {
 	conf    *Config
 	db      *sql.DB
@@ -98,6 +107,17 @@ func New(ctx context.Context, m map[string]any) (storage.FS, error) {
 		return nil, errors.Wrap(err, "localdb: cannot build legacy write path")
 	}
 
+	// Resolve the data directory once, at startup. An operator pointing several
+	// nodes at one export makes <root>/data a symlink to the shared volume, and
+	// that link is configuration, not content: localfs stats through it with
+	// os.Stat, so the driver must see the same directory it does.
+	//
+	// Only this prefix is resolved, deliberately. Every path below it is still
+	// Lstat'ed, so a symlink inside the tree is still reported as a symlink and
+	// the reconciler cannot be walked out of the root.
+	if resolved, rerr := filepath.EvalSymlinks(c.DataDirectory); rerr == nil {
+		c.DataDirectory = resolved
+	}
 	fs := &localdb{conf: &c, db: db, dialect: d, legacy: legacy}
 	if c.AutoSync {
 		if err := fs.syncTree(ctx, "/"); err != nil {
@@ -299,7 +319,12 @@ func (fs *localdb) Delete(ctx context.Context, ref *provider.Reference) error {
 	if err := fs.legacy.Delete(ctx, lref); err != nil {
 		return err
 	}
-	return fs.purgeSubtree(ctx, p)
+	if err := fs.purgeSubtree(ctx, p); err != nil {
+		return err
+	}
+	// Delete purges rows and writes nothing, so the ancestors are not covered by
+	// upsert and have to be re-read here.
+	return fs.refreshAncestors(ctx, p)
 }
 
 func (fs *localdb) Move(ctx context.Context, oldRef, newRef *provider.Reference) error {
@@ -336,10 +361,43 @@ func (fs *localdb) Upload(ctx context.Context, ref *provider.Reference, r io.Rea
 	if err != nil {
 		return err
 	}
+	// Read the destination first: FinishUpload deletes the session's .info file,
+	// so the upload id is unusable once the write succeeds.
+	dest, haveDest := fs.uploadDestination(ctx, ref.GetPath())
 	if err := fs.legacy.Upload(ctx, lref, r, metadata); err != nil {
 		return err
 	}
+	if haveDest {
+		return fs.syncPath(ctx, dest)
+	}
+	// localfs.Upload takes an upload id in ref.Path, so syncing ref would stat
+	// "/<uuid>" and report not found on a write that already landed.
 	return fs.resyncRef(ctx, ref)
+}
+
+// uploadDestination maps a finished upload id to the driver path it wrote.
+func (fs *localdb) uploadDestination(ctx context.Context, id string) (string, bool) {
+	store, ok := fs.legacy.(uploadStore)
+	if !ok {
+		return "", false
+	}
+	upload, err := store.GetUpload(ctx, id)
+	if err != nil {
+		return "", false
+	}
+	info, err := upload.GetInfo(ctx)
+	if err != nil {
+		return "", false
+	}
+	dest := info.Storage["InternalDestination"]
+	if dest == "" {
+		return "", false
+	}
+	p := strings.TrimPrefix(dest, fs.conf.DataDirectory)
+	if p == dest {
+		return "", false
+	}
+	return path.Clean("/" + p), true
 }
 
 func (fs *localdb) Download(ctx context.Context, ref *provider.Reference, ranges []storage.Range) (io.ReadCloser, error) {
