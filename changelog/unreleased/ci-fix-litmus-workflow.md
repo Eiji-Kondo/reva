@@ -1,4 +1,4 @@
-CI: Run the litmus workflow again
+Enhancement: Run the litmus workflow again
 
 `test-litmus.yml` declared `needs: docker-revad-eos`, but that job lives in
 `test-docker.yml`. A workflow can only depend on jobs in the same file, so
