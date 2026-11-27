@@ -27,7 +27,7 @@ jobs:
           SQL_DBNAME: reva
     services:
       redis:
-        image: registry.cern.ch/docker.io/webhippie/redis
+        image: redis:7
       mysql:
         image: mysql
         ports:
