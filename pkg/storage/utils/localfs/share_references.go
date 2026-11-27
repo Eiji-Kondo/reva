@@ -20,6 +20,7 @@ package localfs
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/url"
 	"os"
@@ -84,8 +85,20 @@ func (fs *localfs) sharedResourcePath(ctx context.Context, id *provider.Resource
 
 func (fs *localfs) resolveShareReference(ctx context.Context, sharePath string, write bool) (string, error) {
 	referencePath := fs.wrapReferences(ctx, sharePath)
+	// The marker on disk decides whether the entry exists: it is what the
+	// share folder listing shows, and recycling it is what removes the entry.
+	if _, statErr := os.Stat(referencePath); statErr != nil {
+		if os.IsNotExist(statErr) {
+			return "", errtypes.NotFound(sharePath)
+		}
+		return "", errors.Wrap(statErr, "localfs: error stating share reference "+referencePath)
+	}
+
 	target, err := fs.getReferenceEntry(ctx, referencePath)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", errtypes.NotFound(sharePath)
+		}
 		return "", errors.Wrap(err, "localfs: error getting share reference target")
 	}
 
