@@ -15,4 +15,9 @@ one). The pin is bumped to `58d1e5d9.el9`, which was checked to still start the
 EOS daemons and answer the `eos file info /eos/user` healthcheck used by
 `tests/docker/docker-compose.yml`.
 
+The litmus client image is pulled from `owncloud/litmus:latest` again instead of
+`registry.cern.ch/docker.io/owncloud/litmus:latest`, which now answers `401` to
+anonymous pulls; the rest of the stack already pulls from Docker Hub
+(`osixia/openldap`).
+
 https://github.com/Eiji-Kondo/reva/pull/10
