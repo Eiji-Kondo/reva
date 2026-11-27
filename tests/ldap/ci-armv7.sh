@@ -640,6 +640,30 @@ cmp /tmp/shared-test.txt /tmp/dav-response
   share-update-received -state=rejected "$received_share_id"
 expect_status 404 --user marie:test-password "$recipient_share_path"
 
+# Removing a share as the owner must revoke the grant and the recipient's
+# reference, so the entry disappears instead of failing with a permission error.
+printf 'unshared content\n' >/tmp/unshare-test.txt
+expect_status 201 --user einstein:test-password \
+  -T /tmp/unshare-test.txt "$DAV_URL/$share_dir/unshare.txt"
+"$REVA_BIN" -insecure -host=localhost:9142 -token-file="$owner_token" \
+  share-create -grantee=marie -idp=http://localhost:20080 -role=viewer \
+  "/localfs/$share_dir/unshare.txt" \
+  >/tmp/unshare-share.txt
+unshare_share_id=$(awk -F '|' '/GRANTEE_TYPE_USER/ { id=$2; gsub(/[[:space:]]/, "", id); print id; exit }' \
+  /tmp/unshare-share.txt)
+if [[ -z "$unshare_share_id" ]]; then
+  echo "could not create the share to be removed" >&2
+  cat /tmp/unshare-share.txt >&2
+  exit 1
+fi
+"$REVA_BIN" -insecure -host=localhost:9142 -token-file="$recipient_token" \
+  share-update-received -state=accepted "$unshare_share_id"
+expect_status 200 --user marie:test-password "$DAV_URL/MyShares/unshare.txt"
+"$REVA_BIN" -insecure -host=localhost:9142 -token-file="$owner_token" \
+  share-remove "$unshare_share_id"
+expect_status 404 --user marie:test-password "$DAV_URL/MyShares/unshare.txt"
+expect_status 200 --user einstein:test-password "$DAV_URL/$share_dir/unshare.txt"
+
 printf 'editor permission test\n' >/tmp/editor-test.txt
 expect_status 201 --user einstein:test-password \
   -T /tmp/editor-test.txt "$DAV_URL/$share_dir/editor.txt"
@@ -652,8 +676,8 @@ grep -q 'create_container:true' /tmp/editor-share.txt
 received_shares=$("$REVA_BIN" -insecure -host=localhost:9142 \
   -token-file="$recipient_token" share-list-received)
 editor_share_id=$(printf '%s\n' "$received_shares" |
-  awk -F '|' -v previous="$received_share_id" \
-    '/GRANTEE_TYPE_USER/ { id=$2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", id); if (id != previous) { print id; exit } }')
+  awk -F '|' -v previous="$received_share_id" -v removed="$unshare_share_id" \
+    '/GRANTEE_TYPE_USER/ { id=$2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", id); if (id != previous && id != removed) { print id; exit } }')
 if [[ -z "$editor_share_id" ]]; then
   echo "Marie did not receive Einstein's editor share" >&2
   exit 1

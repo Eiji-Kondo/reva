@@ -218,14 +218,14 @@ func (fs *localfs) permissionsForGrantee(ctx context.Context, resourcePath strin
 		return nil, false, errors.Wrap(err, "localfs: error resolving user ACL type")
 	}
 	grantees := map[string]struct{}{
-		fmt.Sprintf("%s:%s:%s@%s", userACLType, user.Id.GetOpaqueId(), utils.UserTypeToString(user.Id.GetType()), user.Id.GetIdp()): {},
+		aclIdentity(fmt.Sprintf("%s:%s:%s@%s", userACLType, user.Id.GetOpaqueId(), utils.UserTypeToString(user.Id.GetType()), user.Id.GetIdp())): {},
 	}
 	groupACLType, err := grants.GetACLType(provider.GranteeType_GRANTEE_TYPE_GROUP)
 	if err != nil {
 		return nil, false, errors.Wrap(err, "localfs: error resolving group ACL type")
 	}
 	for _, group := range user.GetGroups() {
-		grantees[fmt.Sprintf("%s::%s@%s", groupACLType, group, user.Id.GetIdp())] = struct{}{}
+		grantees[aclIdentity(fmt.Sprintf("%s::%s@%s", groupACLType, group, user.Id.GetIdp()))] = struct{}{}
 	}
 	result := &provider.ResourcePermissions{}
 	var grantee, role string
@@ -234,7 +234,7 @@ func (fs *localfs) permissionsForGrantee(ctx context.Context, resourcePath strin
 		if err := rows.Scan(&grantee, &role); err != nil {
 			return nil, false, errors.Wrap(err, "localfs: error scanning share grants")
 		}
-		if _, ok := grantees[grantee]; !ok {
+		if _, ok := grantees[aclIdentity(grantee)]; !ok {
 			continue
 		}
 		if role == "" {
