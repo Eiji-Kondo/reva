@@ -658,6 +658,46 @@ func TestRemovedShareReferenceIsNotFound(t *testing.T) {
 	}
 }
 
+// TestRevokedGrantHidesTheShareReference covers a grant revoked while the
+// recipient's reference stays behind, which is what unsharing a group share does
+// for members the gateway cannot enumerate: the entry has to stop resolving and
+// drop out of the share folder instead of answering with a permission error.
+func TestRevokedGrantHidesTheShareReference(t *testing.T) {
+	ctx, fs, sharedFile := newShareReferenceFixture(t)
+
+	if _, err := fs.GetMD(ctx, &provider.Reference{Path: "/MyShares/sf"}, nil); err != nil {
+		t.Fatalf("stat accepted share: %v", err)
+	}
+
+	ownerDir := path.Join(fs.conf.DataDirectory, "einstein", "sf")
+	if err := fs.removeFromACLDB(ctx, ownerDir, "u:marie:primary@https://idp.example.test"); err != nil {
+		t.Fatalf("revoke the grant: %v", err)
+	}
+
+	if _, err := fs.GetMD(ctx, &provider.Reference{Path: "/MyShares/sf"}, nil); err == nil {
+		t.Fatal("stat of a reference whose grant was revoked succeeded, want not-found")
+	} else if _, ok := err.(errtypes.IsNotFound); !ok {
+		t.Fatalf("stat of a reference whose grant was revoked returned %T (%v), want a not-found error", err, err)
+	}
+	if _, err := fs.GetMD(ctx, &provider.Reference{Path: "/MyShares/sf/shared.txt"}, nil); err == nil {
+		t.Fatal("stat through a reference whose grant was revoked succeeded, want not-found")
+	}
+
+	infos, err := fs.ListFolder(ctx, &provider.Reference{Path: "/MyShares"}, nil)
+	if err != nil {
+		t.Fatalf("list the share folder: %v", err)
+	}
+	for _, info := range infos {
+		if info.GetPath() == "/MyShares/sf" {
+			t.Fatalf("the share folder still lists a reference whose grant was revoked: %+v", info)
+		}
+	}
+
+	if _, err := os.Stat(sharedFile); err != nil {
+		t.Fatalf("revoking the grant must not touch the shared resource: %v", err)
+	}
+}
+
 // TestRestoredShareReferenceResolvesAgain keeps delete-then-restore-from-the-trash
 // working for a received share: the marker is recycled and restored, so the entry
 // has to come back.

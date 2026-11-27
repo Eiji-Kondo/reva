@@ -75,6 +75,12 @@ func (fs *localfs) sharedResourcePath(ctx context.Context, id *provider.Resource
 
 	permissions, permissionErr := fs.inheritedGrantedPermissions(ctx, physicalPath)
 	if permissionErr != nil {
+		// The grant behind the reference is gone, so the resource is no longer
+		// shared with the caller: report the entry as missing so it disappears
+		// instead of failing with a permission error.
+		if errors.Is(permissionErr, errNoShareGrant) {
+			return "", errtypes.NotFound("localfs: shared resource is no longer shared with the caller")
+		}
 		return "", permissionErr
 	}
 	if permissions.GetStat() || permissions.GetInitiateFileDownload() {
@@ -183,6 +189,11 @@ func (fs *localfs) grantedPermissions(ctx context.Context, resourcePath string) 
 	return fs.inheritedGrantedPermissions(ctx, resourcePath)
 }
 
+// errNoShareGrant reports that no grant covers the resource for the caller. The
+// reference layer turns it into not-found, so a share whose grant was revoked
+// stops resolving even when its reference was left behind.
+var errNoShareGrant = errtypes.PermissionDenied("localfs: no share grant for resource")
+
 func (fs *localfs) inheritedGrantedPermissions(ctx context.Context, resourcePath string) (*provider.ResourcePermissions, error) {
 	dataRoot := path.Clean(fs.conf.DataDirectory)
 	resourcePath = path.Clean(resourcePath)
@@ -198,7 +209,7 @@ func (fs *localfs) inheritedGrantedPermissions(ctx context.Context, resourcePath
 			return permissions, nil
 		}
 	}
-	return nil, errtypes.PermissionDenied("localfs: no share grant for resource")
+	return nil, errNoShareGrant
 }
 
 func (fs *localfs) permissionsForGrantee(ctx context.Context, resourcePath string) (*provider.ResourcePermissions, bool, error) {
