@@ -26,6 +26,7 @@ import (
 
 	"github.com/alitto/pond/v2"
 	gateway "github.com/cs3org/go-cs3apis/cs3/gateway/v1beta1"
+	userpb "github.com/cs3org/go-cs3apis/cs3/identity/user/v1beta1"
 	rpc "github.com/cs3org/go-cs3apis/cs3/rpc/v1beta1"
 	collaboration "github.com/cs3org/go-cs3apis/cs3/sharing/collaboration/v1beta1"
 	provider "github.com/cs3org/go-cs3apis/cs3/storage/provider/v1beta1"
@@ -35,11 +36,13 @@ import (
 	"github.com/cs3org/reva/v3/pkg/sharehierarchy"
 	"github.com/cs3org/reva/v3/pkg/utils/resourceid"
 
+	"github.com/cs3org/reva/v3/pkg/auth/scope"
 	"github.com/cs3org/reva/v3/pkg/errtypes"
 	"github.com/cs3org/reva/v3/pkg/rgrpc/status"
 	"github.com/cs3org/reva/v3/pkg/rgrpc/todo/pool"
 	"github.com/cs3org/reva/v3/pkg/storage/utils/grants"
 	"github.com/pkg/errors"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -195,6 +198,11 @@ func (s *svc) RemoveShare(ctx context.Context, req *collaboration.RemoveShareReq
 		}, nil
 	}
 	reapply := checker.GrantsToReapplyAfterRemove(ctx, share.Id.OpaqueId, share.ResourceId, existingShares)
+
+	// Remove the recipient's reference while the grant still resolves it.
+	if s.c.CommitShareToStorageRef {
+		s.removeGranteeReference(ctx, share)
+	}
 
 	if s.c.CommitShareToStorageGrant {
 		removeGrantStatus, err := s.removeGrant(ctx, share.ResourceId, share.Grantee, share.Permissions.Permissions)
@@ -826,6 +834,77 @@ func (s *svc) applyGrant(ctx context.Context, id *provider.ResourceId, grantee *
 	return s.addGrant(ctx, id, grantee, perms)
 }
 
+// impersonateUser returns a context that acts as the given user. Storage
+// providers authorise access per user, while accept, reject and unshare are
+// driven by the other party, so those flows have to talk to the storage as the
+// user who owns the affected data.
+func (s *svc) impersonateUser(ctx context.Context, id *userpb.UserId) (context.Context, error) {
+	// Without an identity or a token manager there is nothing to act with, so the
+	// caller's context is kept.
+	if id.GetOpaqueId() == "" || s.tokenmgr == nil {
+		return ctx, nil
+	}
+	actingUser := &userpb.User{Id: id}
+	// Share records store only the username, so resolve the full user: the storage
+	// provider needs the username to locate the user's home.
+	if s.c.UserProviderEndpoint != "" {
+		if res, err := s.GetUser(ctx, &userpb.GetUserRequest{UserId: id}); err == nil &&
+			res.GetStatus().GetCode() == rpc.Code_CODE_OK && res.GetUser().GetId().GetOpaqueId() != "" {
+			actingUser = res.GetUser()
+		}
+	}
+	scopes, err := scope.AddOwnerScope(nil)
+	if err != nil {
+		return ctx, errors.Wrap(err, "gateway: error building the impersonated user scope")
+	}
+	tkn, err := s.tokenmgr.MintToken(ctx, actingUser, scopes)
+	if err != nil {
+		return ctx, errors.Wrap(err, "gateway: error minting a token for the impersonated user")
+	}
+	userCtx := appctx.ContextSetUser(ctx, actingUser)
+	userCtx = appctx.ContextSetToken(userCtx, tkn)
+	// Replace the caller's token instead of appending to it: services read the
+	// first value of the header, so an appended token would be ignored.
+	md, ok := metadata.FromOutgoingContext(userCtx)
+	if !ok {
+		md = metadata.MD{}
+	}
+	md = md.Copy()
+	md.Set(appctx.TokenHeader, tkn)
+	return metadata.NewOutgoingContext(userCtx, md), nil
+}
+
+// shareGrantContext returns a context that acts as the owner of the share.
+// Storage providers only let the owner of a resource change its ACL, while
+// accept and reject are driven by the recipient, so the grant has to be
+// committed on the owner's behalf.
+func (s *svc) shareGrantContext(ctx context.Context, share *collaboration.Share) (context.Context, error) {
+	return s.impersonateUser(ctx, share.GetOwner())
+}
+
+// removeGranteeReference deletes the recipient's share reference before the
+// grant is revoked: once the grant is gone the recipient can no longer resolve
+// it and the entry would linger in the share folder as a permission error.
+func (s *svc) removeGranteeReference(ctx context.Context, share *collaboration.Share) {
+	log := appctx.GetLogger(ctx)
+	if share.GetResourceId() == nil || share.GetGrantee().GetType() != provider.GranteeType_GRANTEE_TYPE_USER {
+		return
+	}
+	granteeCtx, err := s.impersonateUser(ctx, share.GetGrantee().GetUserId())
+	if err != nil {
+		log.Warn().Err(err).
+			Str("share_id", share.GetId().GetOpaqueId()).
+			Msg("could not act as the share grantee to remove the share reference")
+		return
+	}
+	if st := s.removeReference(granteeCtx, share.GetResourceId()); st.Code != rpc.Code_CODE_OK {
+		log.Warn().
+			Str("share_id", share.GetId().GetOpaqueId()).
+			Str("status", st.String()).
+			Msg("could not remove the share reference of the grantee")
+	}
+}
+
 // applyShareGrant commits the grant of a received share to the storage provider.
 // A share without permissions has nothing to commit, so it is a no-op.
 func (s *svc) applyShareGrant(ctx context.Context, share *collaboration.Share) (*rpc.Status, error) {
@@ -836,7 +915,11 @@ func (s *svc) applyShareGrant(ctx context.Context, share *collaboration.Share) (
 	if grants.PermissionsEqual(perms, &provider.ResourcePermissions{}) {
 		return status.NewOK(ctx), nil
 	}
-	return s.addGrant(ctx, share.GetResourceId(), share.GetGrantee(), perms)
+	grantCtx, err := s.shareGrantContext(ctx, share)
+	if err != nil {
+		return status.NewInternal(ctx, err, "error acting as the share owner"), err
+	}
+	return s.addGrant(grantCtx, share.GetResourceId(), share.GetGrantee(), perms)
 }
 
 // removeShareGrant revokes the grant of a received share from the storage
@@ -845,7 +928,11 @@ func (s *svc) removeShareGrant(ctx context.Context, share *collaboration.Share) 
 	if share.GetResourceId() == nil || share.GetGrantee() == nil {
 		return status.NewOK(ctx), nil
 	}
-	return s.removeGrant(ctx, share.GetResourceId(), share.GetGrantee(), share.GetPermissions().GetPermissions())
+	grantCtx, err := s.shareGrantContext(ctx, share)
+	if err != nil {
+		return status.NewInternal(ctx, err, "error acting as the share owner"), err
+	}
+	return s.removeGrant(grantCtx, share.GetResourceId(), share.GetGrantee(), share.GetPermissions().GetPermissions())
 }
 
 // reapplyChildGrants re-applies the storage grants for the given child shares.

@@ -256,7 +256,37 @@ func (fs *localfs) removeFromRecycledDB(ctx context.Context, key string) error {
 	return nil
 }
 
+// aclIdentity drops the idp from an ACL grantee key. localfs lays users out by
+// username, so the idp is not part of a user's identity here, and callers do not
+// always know it: the share manager stores only the username, so a revoke
+// arrives as "u:marie:primary@" while the grant was written as
+// "u:marie:primary@https://idp.example.test". Matching on the identity keeps
+// add, remove and resolution in agreement.
+func aclIdentity(grantee string) string {
+	if i := strings.LastIndex(grantee, "@"); i >= 0 {
+		return grantee[:i]
+	}
+	return grantee
+}
+
+// aclIdentityArgs returns the length and prefix arguments used to match every
+// row that belongs to the same identity as grantee.
+func aclIdentityArgs(grantee string) (int64, string) {
+	identity := aclIdentity(grantee)
+	return int64(len(identity) + 1), identity + "@"
+}
+
 func (fs *localfs) addToACLDB(ctx context.Context, resource, grantee, role string) error {
+	// A grant written with one idp must not coexist with the same grant written
+	// without one, so clear the role on any row for the same identity first.
+	prefixLen, prefix := aclIdentityArgs(grantee)
+	if _, err := fs.db.Exec(
+		fs.q("UPDATE user_interaction SET role='' WHERE resource=? AND grantee<>? AND substr(grantee, 1, ?)=?"),
+		resource, grantee, prefixLen, prefix,
+	); err != nil {
+		return errors.Wrap(err, "localfs: error clearing duplicate ACL entries")
+	}
+
 	stmt, err := fs.db.Prepare(fs.q(fs.sql(
 		"INSERT INTO user_interaction (resource, grantee, role) VALUES (?, ?, ?) ON CONFLICT(resource, grantee) DO UPDATE SET role=?",
 		"INSERT INTO user_interaction (resource, grantee, role) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE role=?")))
@@ -279,11 +309,12 @@ func (fs *localfs) getACLs(ctx context.Context, resource string) (*sql.Rows, err
 }
 
 func (fs *localfs) removeFromACLDB(ctx context.Context, resource, grantee string) error {
-	stmt, err := fs.db.Prepare(fs.q("UPDATE user_interaction SET role='' WHERE resource=? AND grantee=?"))
+	prefixLen, prefix := aclIdentityArgs(grantee)
+	stmt, err := fs.db.Prepare(fs.q("UPDATE user_interaction SET role='' WHERE resource=? AND (grantee=? OR substr(grantee, 1, ?)=?)"))
 	if err != nil {
 		return errors.Wrap(err, "localfs: error preparing statement")
 	}
-	_, err = stmt.Exec(resource, grantee)
+	_, err = stmt.Exec(resource, grantee, prefixLen, prefix)
 	if err != nil {
 		return errors.Wrap(err, "localfs: error executing delete statement")
 	}
