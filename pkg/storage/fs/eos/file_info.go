@@ -86,7 +86,10 @@ func (fs *Eosfs) GetMD(ctx context.Context, ref *provider.Reference, mdKeys []st
 		if err != nil {
 			return nil, fmt.Errorf("error getting path for resource id: %s", opaqueID)
 		}
-		filePath = fs.wrap(ctx, filePath)
+		filePath, err = fs.wrap(ctx, filePath)
+		if err != nil {
+			return nil, err
+		}
 
 		versionFolder := eosclient.GetVersionFolder(filePath)
 		versionPath := filepath.Join(versionFolder, version)

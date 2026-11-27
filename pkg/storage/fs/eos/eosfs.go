@@ -47,6 +47,7 @@ import (
 	"github.com/cs3org/reva/v3/pkg/storage/utils/acl"
 	"github.com/cs3org/reva/v3/pkg/storage/utils/chunking"
 	"github.com/cs3org/reva/v3/pkg/storage/utils/grants"
+	"github.com/cs3org/reva/v3/pkg/storage/utils/templates"
 	"github.com/cs3org/reva/v3/pkg/utils"
 	"github.com/pkg/errors"
 )
@@ -247,7 +248,7 @@ func NewEOSFS(ctx context.Context, c *Config) (storage.FS, error) {
 func (fs *Eosfs) userIDcacheWarmup() {
 	time.Sleep(2 * time.Second)
 	ctx := context.Background()
-	paths := []string{fs.wrap(ctx, "/")}
+	paths := []string{fs.conf.Namespace}
 
 	for i := 0; i < fs.conf.UserIDCacheWarmupDepth; i++ {
 		var newPaths []string
@@ -287,14 +288,32 @@ func (fs *Eosfs) UpdateStorageSpace(ctx context.Context, req *provider.UpdateSto
 	return nil, errtypes.NotSupported("eosfs: UpdateStorageSpace is not supported")
 }
 
-func (fs *Eosfs) wrap(ctx context.Context, fn string) (internal string) {
-	if fs.isPathWrapped(fn) {
-		return fn
+// getInternalHome returns the home of the user in the context, relative to the
+// namespace.
+func (fs *Eosfs) getInternalHome(ctx context.Context) (string, error) {
+	u, err := utils.GetUser(ctx)
+	if err != nil {
+		return "", errors.Wrap(err, "eosfs: home is enabled but there is no user in ctx")
 	}
-	internal = path.Join(fs.conf.Namespace, fn)
+	return templates.WithUser(u, fs.conf.UserLayout), nil
+}
+
+func (fs *Eosfs) wrap(ctx context.Context, fn string) (string, error) {
+	if fs.isPathWrapped(fn) {
+		return fn, nil
+	}
+	ns := fs.conf.Namespace
+	if fs.conf.EnableHome {
+		home, err := fs.getInternalHome(ctx)
+		if err != nil {
+			return "", err
+		}
+		ns = path.Join(ns, home)
+	}
+	internal := path.Join(ns, fn)
 	log := appctx.GetLogger(ctx)
 	log.Debug().Msg("eosfs: wrap external=" + fn + " internal=" + internal)
-	return
+	return internal, nil
 }
 
 func (fs *Eosfs) unwrap(ctx context.Context, internal string) (string, error) {
@@ -302,6 +321,13 @@ func (fs *Eosfs) unwrap(ctx context.Context, internal string) (string, error) {
 	ns, err := fs.getNsMatch(internal, []string{fs.conf.Namespace})
 	if err != nil {
 		return "", err
+	}
+	if fs.conf.EnableHome {
+		home, err := fs.getInternalHome(ctx)
+		if err != nil {
+			return "", err
+		}
+		ns = path.Join(ns, home)
 	}
 	external, err := fs.unwrapInternal(ctx, ns, internal)
 	if err != nil {
@@ -357,14 +383,21 @@ func (fs *Eosfs) resolve(ctx context.Context, ref *provider.Reference) (string, 
 		}
 		p = path.Join(p, ref.Path)
 		if !fs.isPathWrapped(p) {
-			p = fs.wrap(ctx, p)
+			p, err = fs.wrap(ctx, p)
+			if err != nil {
+				return "", err
+			}
 		}
 		return p, nil
 	}
 	if ref.Path != "" {
 		p := ref.Path
 		if !fs.isPathWrapped(p) {
-			p = fs.wrap(ctx, p)
+			p, err := fs.wrap(ctx, p)
+			if err != nil {
+				return "", err
+			}
+			return p, nil
 		}
 		return p, nil
 	}

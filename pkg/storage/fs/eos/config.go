@@ -72,7 +72,11 @@ type Config struct {
 	// UseKeyTabAuth changes will authenticate requests by using an EOS keytab.
 	UseKeytab bool `mapstructure:"use_keytab"`
 
-	// EnableHome enables the creation of home directories.
+	// EnableHome jails every path in the user's home directory: the UserLayout
+	// above is resolved against the request user and joined to the namespace.
+	EnableHome bool `mapstructure:"enable_home"`
+
+	// EnableHomeCreation enables the creation of home directories.
 	EnableHomeCreation bool `mapstructure:"enable_home_creation"`
 
 	// Whether to maintain the same inode across various versions of a file.

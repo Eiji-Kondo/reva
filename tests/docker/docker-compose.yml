@@ -34,7 +34,7 @@ services:
       ldap:
         condition: service_healthy
   litmus:
-    image: registry.cern.ch/docker.io/owncloud/litmus:latest
+    image: owncloud/litmus:latest
     environment:
       LITMUS_USERNAME: einstein
       LITMUS_PASSWORD: relativity

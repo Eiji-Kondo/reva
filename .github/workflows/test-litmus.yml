@@ -8,8 +8,6 @@ on:
 
 jobs:
   litmus:
-    needs:
-      - docker-revad-eos
     strategy:
       fail-fast: false
       matrix:

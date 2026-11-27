@@ -1,0 +1,37 @@
+Enhancement: Run the litmus workflow again
+
+`test-litmus.yml` declared `needs: docker-revad-eos`, but that job lives in
+`test-docker.yml`. A workflow can only depend on jobs in the same file, so
+GitHub rejected the whole workflow before scheduling anything: every run
+finished as a failure with zero jobs, and litmus has not executed since the
+dependency was added. The litmus make targets build both images themselves
+(`docker-eos-full-tests` and `docker-revad-eos` are prerequisites and compose
+runs with `--build`), so the dependency was redundant as well.
+
+With the workflow scheduling again, litmus failed on its first step: the EOS
+test image pinned `gitlab-registry.cern.ch/dss/eos/eos-ci:02352772.el9`, a tag
+CERN no longer serves (721 tags remain, 482 of them `*.el9`, none of them that
+one). The pin is bumped to `58d1e5d9.el9`, which was checked to still start the
+EOS daemons and answer the `eos file info /eos/user` healthcheck used by
+`tests/docker/docker-compose.yml`.
+
+The litmus client image is pulled from `owncloud/litmus:latest` again instead of
+`registry.cern.ch/docker.io/owncloud/litmus:latest`, which now answers `401` to
+anonymous pulls; the rest of the stack already pulls from Docker Hub
+(`osixia/openldap`).
+
+With the containers starting, `storage-home` exited immediately with
+`driver not found: eoshome`: `tests/revad/storage-home.toml` still named the
+`eoshome` driver, which no longer exists as a separate backend, so the config
+now names `eos`. That alone does not make the mount work, because the `eos`
+driver does not jail users into their home; the option that restores it is added
+in the follow-up change.
+
+The reva image was still built on `eos-all:5.2.14` while the storage container
+runs the `eos-ci:58d1e5d9.el9` release. The driver shells out to the `eos` CLI,
+and the 5.2.14 client does not know `newfind --skip-version-dirs`, so every
+`ListContainer` died with `exit 22` and the usage text (surfaced as a
+permission error) and collection COPY/MOVE answered `500`. Both images now use
+the same EOS release.
+
+https://github.com/Eiji-Kondo/reva/pull/10

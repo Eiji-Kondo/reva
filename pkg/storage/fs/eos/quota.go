@@ -53,7 +53,11 @@ func (fs *Eosfs) GetQuota(ctx context.Context, ref *provider.Reference) (totalby
 	sysAuth := getSystemAuth()
 
 	if ref.Path != fs.conf.QuotaNode && ref.Path != "" {
-		ref.Path = fs.wrap(ctx, ref.Path)
+		wrapped, err := fs.wrap(ctx, ref.Path)
+		if err != nil {
+			return 0, 0, err
+		}
+		ref.Path = wrapped
 	}
 
 	if fs.quotaCache != nil {
