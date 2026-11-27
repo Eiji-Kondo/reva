@@ -730,7 +730,7 @@ func (fs *localfs) RemoveGrant(ctx context.Context, ref *provider.Reference, g *
 	}
 	var grantee string
 	if granteeType == acl.TypeUser {
-		grantee = fmt.Sprintf("%s:%s@%s", granteeType, g.Grantee.GetUserId().OpaqueId, g.Grantee.GetUserId().Idp)
+		grantee = fmt.Sprintf("%s:%s:%s@%s", granteeType, g.Grantee.GetUserId().OpaqueId, utils.UserTypeToString(g.Grantee.GetUserId().Type), g.Grantee.GetUserId().Idp)
 	} else if granteeType == acl.TypeGroup {
 		grantee = fmt.Sprintf("%s:%s@%s", granteeType, g.Grantee.GetGroupId().OpaqueId, g.Grantee.GetGroupId().Idp)
 	}
