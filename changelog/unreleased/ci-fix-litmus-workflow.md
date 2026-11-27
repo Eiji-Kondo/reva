@@ -20,4 +20,10 @@ The litmus client image is pulled from `owncloud/litmus:latest` again instead of
 anonymous pulls; the rest of the stack already pulls from Docker Hub
 (`osixia/openldap`).
 
+With the containers starting, `storage-home` exited immediately with
+`driver not found: eoshome`: `tests/revad/storage-home.toml` still named the
+`eoshome` driver, which no longer exists as a separate backend. The `eos` driver
+covers it through `user_layout` and `enable_home_creation`, which the file
+already set, so the config now names `eos`.
+
 https://github.com/Eiji-Kondo/reva/pull/10

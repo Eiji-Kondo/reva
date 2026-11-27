@@ -1,5 +1,5 @@
 # This config file will start a reva service that:
-# - uses the eoshome driver to serve users, jailed into their home (/home)
+# - uses the eos driver to serve users, jailed into their home (/home)
 # - serves the home storage provider on grpc port 12000
 # - serves http dataprovider for this storage on port 12001
 #   - /data - dataprovider: file up and download
@@ -17,14 +17,14 @@ address = "0.0.0.0:12000"
 # This is a storage provider that grants direct access to the wrapped storage
 # the context path wrapper reads tho username from the context and prefixes the relative storage path with it
 [grpc.services.storageprovider]
-driver = "eoshome"
+driver = "eos"
 mount_path = "/home"
 mount_id = "123e4567-e89b-12d3-a456-426655440000"
 expose_data_server = true
 data_server_url = "http://storage-home:12001/data"
 enable_home_creation = true
 
-[grpc.services.storageprovider.drivers.eoshome]
+[grpc.services.storageprovider.drivers.eos]
 namespace = "/eos/user/"
 quota_node = "/eos/user/"
 master_url = "root://eosuser.example.org"
@@ -39,10 +39,10 @@ cache_directory = "/var/tmp/reva"
 address = "0.0.0.0:12001"
 
 [http.services.dataprovider]
-driver = "eoshome"
+driver = "eos"
 temp_folder = "/var/tmp/reva/tmp"
 
-[http.services.dataprovider.drivers.eoshome]
+[http.services.dataprovider.drivers.eos]
 namespace = "/eos/user/"
 quota_node = "/eos/user/"
 master_url = "root://eosuser.example.org"
