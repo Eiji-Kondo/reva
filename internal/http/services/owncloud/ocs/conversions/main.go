@@ -35,12 +35,11 @@ import (
 	types "github.com/cs3org/go-cs3apis/cs3/types/v1beta1"
 	"github.com/cs3org/reva/v3/pkg/errtypes"
 	"github.com/cs3org/reva/v3/pkg/mime"
+	"github.com/cs3org/reva/v3/pkg/permissions"
 	"github.com/cs3org/reva/v3/pkg/publicshare"
 	publicsharemgr "github.com/cs3org/reva/v3/pkg/publicshare/manager/registry"
 	"github.com/cs3org/reva/v3/pkg/user"
 	usermgr "github.com/cs3org/reva/v3/pkg/user/manager/registry"
-	"github.com/cs3org/reva/v3/pkg/permissions"
-
 )
 
 const (

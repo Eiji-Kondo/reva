@@ -493,7 +493,7 @@ func (h *Handler) updatePublicShare(w http.ResponseWriter, r *http.Request, shar
 	// NotifyUploadsExtraRecipients
 	newNotifyUploadsExtraRecipients, ok := r.Form["notifyUploadsExtraRecipients"]
 
-	if ok && permissionsStayUploader(before, newPermissions){
+	if ok && permissionsStayUploader(before, newPermissions) {
 		notifyUploadsExtraRecipients := newNotifyUploadsExtraRecipients[0]
 		updatesFound = true
 		logger.Info().Str("shares", "update").Msgf("notify uploads extra recipients updated to '%v'", notifyUploadsExtraRecipients)

@@ -114,8 +114,8 @@ func (c *config) ApplyDefaults() {
 		c.Nobody = 99
 	}
 	// 案B: ApplyDefaults/Configureでフォールバック
-	if c.Schema.GroupName == "" {  
-		c.Schema.GroupName = c.Schema.CN  // 後方互換  
+	if c.Schema.GroupName == "" {
+		c.Schema.GroupName = c.Schema.CN // 後方互換
 	}
 }
 
