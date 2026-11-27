@@ -583,3 +583,114 @@ func TestGetPathByIDKeepsUserHomeAndRejectsPrivatePaths(t *testing.T) {
 		t.Fatal("expected traversal resource id to be denied")
 	}
 }
+
+// newShareReferenceFixture wires a received folder share: einstein owns
+// einstein/sf/shared.txt, marie holds a read grant and a reference in
+// /MyShares/sf.
+func newShareReferenceFixture(t *testing.T) (context.Context, *localfs, string) {
+	t.Helper()
+
+	config := &Config{Root: t.TempDir(), UserLayout: "{{.Username}}", ShareFolder: "/MyShares"}
+	config.ApplyDefaults()
+	db, err := initializeDB(config.Root, "test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	fs := &localfs{conf: config, db: db}
+
+	ctx := appctx.ContextSetUser(context.Background(), &userpb.User{
+		Id:       &userpb.UserId{OpaqueId: "marie", Idp: "https://idp.example.test", Type: userpb.UserType_USER_TYPE_PRIMARY},
+		Username: "marie",
+	})
+
+	ownerDir := path.Join(config.DataDirectory, "einstein", "sf")
+	if err := os.MkdirAll(ownerDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	sharedFile := path.Join(ownerDir, "shared.txt")
+	if err := os.WriteFile(sharedFile, []byte("shared"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	grantee := "u:marie:primary@https://idp.example.test"
+	if err := fs.addToACLDB(ctx, ownerDir, grantee, "rx"); err != nil {
+		t.Fatal(err)
+	}
+
+	resourceID := &provider.ResourceId{OpaqueId: "fileid-" + url.QueryEscape("einstein/sf")}
+	shareTarget := &url.URL{Scheme: "cs3", Opaque: "localfs/" + resourceID.GetOpaqueId()}
+	if err := fs.CreateReference(ctx, "/MyShares/sf", shareTarget); err != nil {
+		t.Fatalf("create share reference: %v", err)
+	}
+
+	return ctx, fs, sharedFile
+}
+
+// TestRemovedShareReferenceIsNotFound pins what a rejected share must do to the
+// recipient: the entry stops resolving and the sharer's file is left alone. The
+// reference target lives in the share_references table while the marker lives on
+// disk, so resolution has to depend on the marker the share folder lists.
+func TestRemovedShareReferenceIsNotFound(t *testing.T) {
+	ctx, fs, sharedFile := newShareReferenceFixture(t)
+
+	if _, err := fs.GetMD(ctx, &provider.Reference{Path: "/MyShares/sf"}, nil); err != nil {
+		t.Fatalf("stat accepted share: %v", err)
+	}
+
+	if err := fs.Delete(ctx, &provider.Reference{Path: "/MyShares/sf"}); err != nil {
+		t.Fatalf("delete share reference: %v", err)
+	}
+
+	_, err := fs.GetMD(ctx, &provider.Reference{Path: "/MyShares/sf"}, nil)
+	if err == nil {
+		t.Fatal("stat of a removed share reference succeeded, want not-found")
+	}
+	if _, ok := err.(errtypes.IsNotFound); !ok {
+		t.Fatalf("stat of a removed share reference returned %T (%v), want a not-found error", err, err)
+	}
+	if _, err := fs.Download(ctx, &provider.Reference{Path: "/MyShares/sf"}, nil); err == nil {
+		t.Fatal("download through a removed share reference succeeded, want not-found")
+	}
+
+	if _, err := os.Stat(sharedFile); err != nil {
+		t.Fatalf("removing the reference must not touch the shared resource: %v", err)
+	}
+}
+
+// TestRestoredShareReferenceResolvesAgain keeps delete-then-restore-from-the-trash
+// working for a received share: the marker is recycled and restored, so the entry
+// has to come back.
+func TestRestoredShareReferenceResolvesAgain(t *testing.T) {
+	ctx, fs, _ := newShareReferenceFixture(t)
+
+	if err := fs.Delete(ctx, &provider.Reference{Path: "/MyShares/sf"}); err != nil {
+		t.Fatalf("delete share reference: %v", err)
+	}
+
+	items, err := fs.ListRecycle(ctx, "/", "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("list recycle: %v", err)
+	}
+	var key string
+	for _, it := range items {
+		if it.GetRef().GetPath() == "/MyShares/sf" {
+			key = it.Key
+		}
+	}
+	if key == "" {
+		t.Fatalf("deleted share reference is not in the trash: %+v", items)
+	}
+
+	if err := fs.RestoreRecycleItem(ctx, "/", key, "", nil); err != nil {
+		t.Fatalf("restore share reference: %v", err)
+	}
+
+	info, err := fs.GetMD(ctx, &provider.Reference{Path: "/MyShares/sf"}, nil)
+	if err != nil {
+		t.Fatalf("stat restored share reference: %v", err)
+	}
+	if info.Type != provider.ResourceType_RESOURCE_TYPE_CONTAINER {
+		t.Fatalf("restored share type = %v, want CONTAINER", info.Type)
+	}
+}
