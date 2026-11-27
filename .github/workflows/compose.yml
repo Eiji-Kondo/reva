@@ -35,6 +35,11 @@ jobs:
           REVAD_IMAGE: ${{ inputs.image }}
           PARTS: ${{ inputs.parts }}
           PART: ${{ inputs.part }}
+      - name: Logs
+        if: failure()
+        run: docker compose -f ./tests/docker/docker-compose.yml logs --no-color --timestamps
+        env:
+          EOS_FULL_IMAGE: eos-full
       - name: Clean
         if: always()
         run: make docker-clean
