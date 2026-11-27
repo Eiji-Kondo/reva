@@ -22,8 +22,9 @@ anonymous pulls; the rest of the stack already pulls from Docker Hub
 
 With the containers starting, `storage-home` exited immediately with
 `driver not found: eoshome`: `tests/revad/storage-home.toml` still named the
-`eoshome` driver, which no longer exists as a separate backend. The `eos` driver
-covers it through `user_layout` and `enable_home_creation`, which the file
-already set, so the config now names `eos`.
+`eoshome` driver, which no longer exists as a separate backend, so the config
+now names `eos`. That alone does not make the mount work, because the `eos`
+driver does not jail users into their home; the option that restores it is added
+in the follow-up change.
 
 https://github.com/Eiji-Kondo/reva/pull/10

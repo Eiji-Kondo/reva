@@ -32,6 +32,11 @@ for letter in {a..z}; do
   eos mkdir -p "/eos/user/$letter"
 done
 
+# home of the litmus user; the home provider jails every request into it, and
+# without a create_home_hook the reva eos driver cannot create it on demand
+eos mkdir -p /eos/user/e/einstein
+eos chmod 777 /eos/user/e/einstein
+
 # create cbox sudoer user
 adduser cbox -u 58679 -g 0 -m -s /bin/sh
 eos vid set membership 0 +sudo

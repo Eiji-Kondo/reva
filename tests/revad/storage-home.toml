@@ -27,6 +27,7 @@ enable_home_creation = true
 [grpc.services.storageprovider.drivers.eos]
 namespace = "/eos/user/"
 quota_node = "/eos/user/"
+enable_home = true
 master_url = "root://eosuser.example.org"
 slave_url = "root://eosuser.example.org"
 user_layout = "{{substr 0 1 .Username}}/{{.Username}}"
@@ -45,6 +46,7 @@ temp_folder = "/var/tmp/reva/tmp"
 [http.services.dataprovider.drivers.eos]
 namespace = "/eos/user/"
 quota_node = "/eos/user/"
+enable_home = true
 master_url = "root://eosuser.example.org"
 slave_url = "root://eosuser.example.org"
 user_layout = "{{substr 0 1 .Username}}/{{.Username}}"
