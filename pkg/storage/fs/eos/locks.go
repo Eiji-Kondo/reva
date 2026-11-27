@@ -52,6 +52,11 @@ func (fs *Eosfs) GetLock(ctx context.Context, ref *provider.Reference) (*provide
 	// to get the eventual lock.
 	has, err := fs.userHasReadAccess(ctx, user, ref)
 	if err != nil {
+		// the storageprovider service picks the rpc status with a plain type
+		// switch, so a wrapped NotFound would be reported as an internal error
+		if _, ok := err.(errtypes.IsNotFound); ok {
+			return nil, err
+		}
 		return nil, errors.Wrap(err, "eosfs: error checking read access to resource")
 	}
 	if !has {
