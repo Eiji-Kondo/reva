@@ -283,12 +283,14 @@ type fakeCollaborationServer struct {
 	mu     sync.Mutex
 	nextID int
 	shares map[string]*collaboration.Share
+	states map[string]collaboration.ShareState
 }
 
 func newFakeCollaborationServer() *fakeCollaborationServer {
 	return &fakeCollaborationServer{
 		nextID: 1,
 		shares: map[string]*collaboration.Share{},
+		states: map[string]collaboration.ShareState{},
 	}
 }
 
@@ -358,6 +360,44 @@ func (s *fakeCollaborationServer) UpdateShare(_ context.Context, req *collaborat
 		share.Permissions = &collaboration.SharePermissions{Permissions: perms.Permissions}
 	}
 	return &collaboration.UpdateShareResponse{Status: okStatus(), Share: proto.Clone(share).(*collaboration.Share)}, nil
+}
+
+func (s *fakeCollaborationServer) ListReceivedShares(_ context.Context, _ *collaboration.ListReceivedSharesRequest, _ ...grpc.CallOption) (*collaboration.ListReceivedSharesResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	shares := make([]*collaboration.ReceivedShare, 0, len(s.shares))
+	for id, share := range s.shares {
+		state, ok := s.states[id]
+		if !ok {
+			state = collaboration.ShareState_SHARE_STATE_ACCEPTED
+		}
+		shares = append(shares, &collaboration.ReceivedShare{
+			Share: proto.Clone(share).(*collaboration.Share),
+			State: state,
+		})
+	}
+	return &collaboration.ListReceivedSharesResponse{Status: okStatus(), Shares: shares}, nil
+}
+
+func (s *fakeCollaborationServer) UpdateReceivedShare(_ context.Context, req *collaboration.UpdateReceivedShareRequest, _ ...grpc.CallOption) (*collaboration.UpdateReceivedShareResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	id := req.GetShare().GetShare().GetId().GetOpaqueId()
+	share, ok := s.shares[id]
+	if !ok {
+		return &collaboration.UpdateReceivedShareResponse{Status: &rpc.Status{Code: rpc.Code_CODE_NOT_FOUND}}, nil
+	}
+	state := req.GetShare().GetState()
+	s.states[id] = state
+	return &collaboration.UpdateReceivedShareResponse{
+		Status: okStatus(),
+		Share: &collaboration.ReceivedShare{
+			Share: proto.Clone(share).(*collaboration.Share),
+			State: state,
+		},
+	}, nil
 }
 
 func (s *fakeCollaborationServer) pathsFor(grantee *provider.Grantee) []string {

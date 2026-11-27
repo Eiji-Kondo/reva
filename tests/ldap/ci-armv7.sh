@@ -631,6 +631,14 @@ grep -q 'marie' <<<"$owner_shares"
 "$REVA_BIN" -insecure -host=localhost:9142 -token-file="$recipient_token" \
   share-update-received -state=rejected "$received_share_id"
 expect_status 404 --user marie:test-password "$recipient_share_path"
+# Accepting the share again must restore both the reference and the grant.
+"$REVA_BIN" -insecure -host=localhost:9142 -token-file="$recipient_token" \
+  share-update-received -state=accepted "$received_share_id"
+expect_status 200 --user marie:test-password "$recipient_share_path"
+cmp /tmp/shared-test.txt /tmp/dav-response
+"$REVA_BIN" -insecure -host=localhost:9142 -token-file="$recipient_token" \
+  share-update-received -state=rejected "$received_share_id"
+expect_status 404 --user marie:test-password "$recipient_share_path"
 
 printf 'editor permission test\n' >/tmp/editor-test.txt
 expect_status 201 --user einstein:test-password \
