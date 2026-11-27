@@ -8,7 +8,7 @@ on:
 
 jobs:
   integration:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,7 +27,7 @@ jobs:
           SQL_DBNAME: reva
     services:
       redis:
-        image: registry.cern.ch/docker.io/webhippie/redis
+        image: redis:7
       mysql:
         image: mysql
         ports:
