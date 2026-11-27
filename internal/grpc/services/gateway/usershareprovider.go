@@ -26,6 +26,7 @@ import (
 
 	"github.com/alitto/pond/v2"
 	gateway "github.com/cs3org/go-cs3apis/cs3/gateway/v1beta1"
+	group "github.com/cs3org/go-cs3apis/cs3/identity/group/v1beta1"
 	userpb "github.com/cs3org/go-cs3apis/cs3/identity/user/v1beta1"
 	rpc "github.com/cs3org/go-cs3apis/cs3/rpc/v1beta1"
 	collaboration "github.com/cs3org/go-cs3apis/cs3/sharing/collaboration/v1beta1"
@@ -882,27 +883,67 @@ func (s *svc) shareGrantContext(ctx context.Context, share *collaboration.Share)
 	return s.impersonateUser(ctx, share.GetOwner())
 }
 
-// removeGranteeReference deletes the recipient's share reference before the
-// grant is revoked: once the grant is gone the recipient can no longer resolve
-// it and the entry would linger in the share folder as a permission error.
+// removeGranteeReference deletes the share references of the recipients before
+// the grant is revoked: once the grant is gone they can no longer resolve it and
+// the entries would linger in their share folders as permission errors.
 func (s *svc) removeGranteeReference(ctx context.Context, share *collaboration.Share) {
 	log := appctx.GetLogger(ctx)
-	if share.GetResourceId() == nil || share.GetGrantee().GetType() != provider.GranteeType_GRANTEE_TYPE_USER {
+	if share.GetResourceId() == nil {
 		return
 	}
-	granteeCtx, err := s.impersonateUser(ctx, share.GetGrantee().GetUserId())
-	if err != nil {
-		log.Warn().Err(err).
-			Str("share_id", share.GetId().GetOpaqueId()).
-			Msg("could not act as the share grantee to remove the share reference")
-		return
+	for _, grantee := range s.shareReferenceHolders(ctx, share) {
+		granteeCtx, err := s.impersonateUser(ctx, grantee)
+		if err != nil {
+			log.Warn().Err(err).
+				Str("share_id", share.GetId().GetOpaqueId()).
+				Str("grantee", grantee.GetOpaqueId()).
+				Msg("could not act as the share grantee to remove the share reference")
+			continue
+		}
+		// A holder who never accepted the share has no reference to remove.
+		if st := s.removeReference(granteeCtx, share.GetResourceId()); st.GetCode() != rpc.Code_CODE_OK && st.GetCode() != rpc.Code_CODE_NOT_FOUND {
+			log.Warn().
+				Str("share_id", share.GetId().GetOpaqueId()).
+				Str("grantee", grantee.GetOpaqueId()).
+				Str("status", st.String()).
+				Msg("could not remove the share reference of the grantee")
+		}
 	}
-	if st := s.removeReference(granteeCtx, share.GetResourceId()); st.Code != rpc.Code_CODE_OK {
-		log.Warn().
-			Str("share_id", share.GetId().GetOpaqueId()).
-			Str("status", st.String()).
-			Msg("could not remove the share reference of the grantee")
+}
+
+// shareReferenceHolders returns the users whose share folder holds a reference
+// for the share. A group share is accepted per member, so every member keeps
+// their own reference and all of them have to be cleaned up.
+func (s *svc) shareReferenceHolders(ctx context.Context, share *collaboration.Share) []*userpb.UserId {
+	log := appctx.GetLogger(ctx)
+	switch share.GetGrantee().GetType() {
+	case provider.GranteeType_GRANTEE_TYPE_USER:
+		if id := share.GetGrantee().GetUserId(); id != nil {
+			return []*userpb.UserId{id}
+		}
+	case provider.GranteeType_GRANTEE_TYPE_GROUP:
+		if s.c.GroupProviderEndpoint == "" {
+			log.Warn().Msg("no group provider configured, cannot clean up the references of a group share")
+			return nil
+		}
+		res, err := s.GetGroup(ctx, &group.GetGroupRequest{GroupId: share.GetGrantee().GetGroupId()})
+		if err != nil {
+			log.Warn().Err(err).Str("share_id", share.GetId().GetOpaqueId()).Msg("could not resolve the members of the shared group")
+			return nil
+		}
+		if res.GetStatus().GetCode() != rpc.Code_CODE_OK {
+			log.Warn().Str("share_id", share.GetId().GetOpaqueId()).Str("status", res.GetStatus().String()).Msg("could not resolve the members of the shared group")
+			return nil
+		}
+		members := make([]*userpb.UserId, 0, len(res.GetGroup().GetMembers()))
+		for _, member := range res.GetGroup().GetMembers() {
+			if member != nil {
+				members = append(members, member)
+			}
+		}
+		return members
 	}
+	return nil
 }
 
 // applyShareGrant commits the grant of a received share to the storage provider.
