@@ -8,4 +8,11 @@ dependency was added. The litmus make targets build both images themselves
 (`docker-eos-full-tests` and `docker-revad-eos` are prerequisites and compose
 runs with `--build`), so the dependency was redundant as well.
 
+With the workflow scheduling again, litmus failed on its first step: the EOS
+test image pinned `gitlab-registry.cern.ch/dss/eos/eos-ci:02352772.el9`, a tag
+CERN no longer serves (721 tags remain, 482 of them `*.el9`, none of them that
+one). The pin is bumped to `58d1e5d9.el9`, which was checked to still start the
+EOS daemons and answer the `eos file info /eos/user` healthcheck used by
+`tests/docker/docker-compose.yml`.
+
 https://github.com/Eiji-Kondo/reva/pull/10

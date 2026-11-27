@@ -5,7 +5,7 @@
 # needs to be passed, else the container will run out of fd.
 # docker run myeoscontainer --ulimit nofiles:1024000:1024000
 
-FROM gitlab-registry.cern.ch/dss/eos/eos-ci:02352772.el9
+FROM gitlab-registry.cern.ch/dss/eos/eos-ci:58d1e5d9.el9
 
 COPY scripts/eos-run.sh /mnt/scripts/eos-run.sh
 COPY sssd/sssd.conf /etc/sssd/sssd.conf
