@@ -72,7 +72,10 @@ func (fs *Eosfs) CreateReference(ctx context.Context, fn string, targetURI *url.
 	// TODO(labkode): with the grpc plugin we can create a file touching with xattrs.
 	// Current mechanism is: touch to hidden location, set xattr, rename.
 	if !fs.isPathWrapped(fn) {
-		fn = fs.wrap(ctx, fn)
+		fn, err = fs.wrap(ctx, fn)
+		if err != nil {
+			return err
+		}
 	}
 	dir, base := path.Split(fn)
 	tmp := path.Join(dir, fmt.Sprintf(".sys.reva#.%s", base))

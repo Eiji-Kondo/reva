@@ -39,7 +39,10 @@ func (fs *Eosfs) ListRevisions(ctx context.Context, ref *provider.Reference) ([]
 	if err != nil {
 		return nil, err
 	}
-	fn = fs.wrap(ctx, md.Path)
+	fn, err = fs.wrap(ctx, md.Path)
+	if err != nil {
+		return nil, err
+	}
 
 	if md.PermissionSet.ListFileVersions {
 		versionFolder := eosclient.GetVersionFolder(fn)
@@ -73,7 +76,10 @@ func (fs *Eosfs) DownloadRevision(ctx context.Context, ref *provider.Reference, 
 	if err != nil {
 		return nil, err
 	}
-	fn = fs.wrap(ctx, md.Path)
+	fn, err = fs.wrap(ctx, md.Path)
+	if err != nil {
+		return nil, err
+	}
 
 	if md.PermissionSet.InitiateFileDownload {
 		versionFolder := eosclient.GetVersionFolder(fn)
@@ -99,7 +105,10 @@ func (fs *Eosfs) RestoreRevision(ctx context.Context, ref *provider.Reference, r
 	if err != nil {
 		return err
 	}
-	fn = fs.wrap(ctx, md.Path)
+	fn, err = fs.wrap(ctx, md.Path)
+	if err != nil {
+		return err
+	}
 
 	if md.PermissionSet.RestoreFileVersion {
 		auth, err = fs.getOwnerAuth(ctx, fn)
