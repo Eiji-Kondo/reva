@@ -40,6 +40,7 @@ import (
 	"github.com/cs3org/reva/v3/pkg/rgrpc/todo/pool"
 	"github.com/cs3org/reva/v3/pkg/storage/utils/grants"
 	"github.com/pkg/errors"
+	"google.golang.org/protobuf/proto"
 )
 
 func (s *svc) CreateShare(ctx context.Context, req *collaboration.CreateShareRequest) (*collaboration.CreateShareResponse, error) {
@@ -692,11 +693,9 @@ func (s *svc) UpdateReceivedShare(ctx context.Context, req *collaboration.Update
 		resourceID := req.GetShare().GetShare().GetResourceId()
 		refStatus := s.createReference(ctx, resourceID)
 		if refStatus.Code != rpc.Code_CODE_OK {
-			rollbackReq := *req
-			rollbackShare := *req.GetShare()
-			rollbackShare.State = previousState
-			rollbackReq.Share = &rollbackShare
-			rollbackRes, rollbackErr := c.UpdateReceivedShare(ctx, &rollbackReq)
+			rollbackReq := proto.Clone(req).(*collaboration.UpdateReceivedShareRequest)
+			rollbackReq.Share.State = previousState
+			rollbackRes, rollbackErr := c.UpdateReceivedShare(ctx, rollbackReq)
 			if rollbackErr != nil {
 				log.Err(rollbackErr).
 					Str("share_id", req.GetShare().GetShare().GetId().GetOpaqueId()).
