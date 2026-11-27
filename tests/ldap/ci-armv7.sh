@@ -664,6 +664,32 @@ expect_status 200 --user marie:test-password "$DAV_URL/MyShares/unshare.txt"
 expect_status 404 --user marie:test-password "$DAV_URL/MyShares/unshare.txt"
 expect_status 200 --user einstein:test-password "$DAV_URL/$share_dir/unshare.txt"
 
+# A group share is accepted per member, so removing it must revoke the group
+# grant and drop the reference in every member's share folder. A stale
+# reference keeps the content reachable after the owner unshared it.
+printf 'group shared content\n' >/tmp/group-test.txt
+expect_status 201 --user einstein:test-password \
+  -T /tmp/group-test.txt "$DAV_URL/$share_dir/group.txt"
+"$REVA_BIN" -insecure -host=localhost:9142 -token-file="$owner_token" \
+  share-create -type=group -grantee=scientists -idp=http://localhost:20080 -role=viewer \
+  "/localfs/$share_dir/group.txt" >/tmp/group-share.txt
+group_share_id=$(awk -F '|' '/GRANTEE_TYPE_GROUP/ { id=$2; gsub(/[[:space:]]/, "", id); print id; exit }' \
+  /tmp/group-share.txt)
+if [[ -z "$group_share_id" ]]; then
+  echo "could not create the group share to be removed" >&2
+  cat /tmp/group-share.txt >&2
+  exit 1
+fi
+"$REVA_BIN" -insecure -host=localhost:9142 -token-file="$recipient_token" \
+  share-update-received -state=accepted "$group_share_id"
+expect_status 200 --user marie:test-password "$DAV_URL/MyShares/group.txt"
+cmp /tmp/group-test.txt /tmp/dav-response
+"$REVA_BIN" -insecure -host=localhost:9142 -token-file="$owner_token" \
+  share-remove "$group_share_id"
+expect_status 404 --user marie:test-password "$DAV_URL/MyShares/group.txt"
+expect_status 404 --user marie:test-password "$DAV_URL/$share_dir/group.txt"
+expect_status 200 --user einstein:test-password "$DAV_URL/$share_dir/group.txt"
+
 printf 'editor permission test\n' >/tmp/editor-test.txt
 expect_status 201 --user einstein:test-password \
   -T /tmp/editor-test.txt "$DAV_URL/$share_dir/editor.txt"

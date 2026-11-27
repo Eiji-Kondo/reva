@@ -7,6 +7,7 @@ import (
 	"path"
 	"testing"
 
+	grouppb "github.com/cs3org/go-cs3apis/cs3/identity/group/v1beta1"
 	userpb "github.com/cs3org/go-cs3apis/cs3/identity/user/v1beta1"
 	provider "github.com/cs3org/go-cs3apis/cs3/storage/provider/v1beta1"
 	"github.com/cs3org/reva/v3/pkg/appctx"
@@ -137,5 +138,60 @@ func TestRemoveGrantWithoutIdpRevokesAccess(t *testing.T) {
 	perms, gerr = fs.inheritedGrantedPermissions(ctxRecipient, ownerDir)
 	if gerr == nil && (perms.GetStat() || perms.GetInitiateFileDownload()) {
 		t.Fatalf("grantee still has read access after re-grant and idp-ful RemoveGrant: %+v", perms)
+	}
+}
+
+// TestRemoveGrantRevokesGroupAccess covers group grants: AddGrant stores the
+// group as "egroup::scientists@idp" while RemoveGrant used a single colon, so the
+// revoke matched no row and every member kept access after the share was
+// unshared.
+func TestRemoveGrantRevokesGroupAccess(t *testing.T) {
+	config := &Config{Root: t.TempDir(), UserLayout: "{{.Username}}", ShareFolder: "/MyShares"}
+	config.ApplyDefaults()
+	db, err := initializeDB(config.Root, "test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	fs := &localfs{conf: config, db: db}
+
+	einsteinID := &userpb.UserId{OpaqueId: "einstein", Idp: "https://idp.example.test", Type: userpb.UserType_USER_TYPE_PRIMARY}
+	marieID := &userpb.UserId{OpaqueId: "marie", Idp: "https://idp.example.test", Type: userpb.UserType_USER_TYPE_PRIMARY}
+	ctxOwner := appctx.ContextSetUser(context.Background(), &userpb.User{Id: einsteinID, Username: "einstein"})
+	ctxMember := appctx.ContextSetUser(context.Background(), &userpb.User{Id: marieID, Username: "marie", Groups: []string{"scientists"}})
+
+	ownerDir := path.Join(config.DataDirectory, "einstein", "sf")
+	if err := os.MkdirAll(ownerDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path.Join(ownerDir, "shared.txt"), []byte("shared"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	resourceID := &provider.ResourceId{StorageId: "localfs", OpaqueId: "fileid-" + url.QueryEscape("einstein/sf")}
+	ref := &provider.Reference{ResourceId: resourceID}
+	groupGrantee := func(idp string) *provider.Grantee {
+		return &provider.Grantee{
+			Type: provider.GranteeType_GRANTEE_TYPE_GROUP,
+			Id:   &provider.Grantee_GroupId{GroupId: &grouppb.GroupId{OpaqueId: "scientists", Idp: idp}},
+		}
+	}
+
+	if err := fs.AddGrant(ctxOwner, ref, &provider.Grant{Grantee: groupGrantee("https://idp.example.test"), Permissions: grants.GetGrantPermissionSet("viewer")}); err != nil {
+		t.Fatalf("AddGrant: %v", err)
+	}
+	// The share manager hands the group back without an idp on accept.
+	if err := fs.AddGrant(ctxOwner, ref, &provider.Grant{Grantee: groupGrantee(""), Permissions: grants.GetGrantPermissionSet("viewer")}); err != nil {
+		t.Fatalf("AddGrant without idp: %v", err)
+	}
+	if perms, err := fs.inheritedGrantedPermissions(ctxMember, ownerDir); err != nil || !perms.GetStat() {
+		t.Fatalf("group member has no read access after AddGrant: %+v %v", perms, err)
+	}
+
+	if err := fs.RemoveGrant(ctxOwner, ref, &provider.Grant{Grantee: groupGrantee("https://idp.example.test")}); err != nil {
+		t.Fatalf("RemoveGrant: %v", err)
+	}
+	perms, gerr := fs.inheritedGrantedPermissions(ctxMember, ownerDir)
+	if gerr == nil && (perms.GetStat() || perms.GetInitiateFileDownload()) {
+		t.Fatalf("group member still has read access after RemoveGrant: %+v", perms)
 	}
 }
