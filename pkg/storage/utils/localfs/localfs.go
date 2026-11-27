@@ -1221,7 +1221,8 @@ func (fs *localfs) GetMD(ctx context.Context, ref *provider.Reference, mdKeys []
 	log := appctx.GetLogger(ctx)
 	fn, err := fs.resolve(ctx, ref)
 	if err != nil {
-		return nil, errors.Wrap(err, "localfs: error resolving ref")
+		// Keep the error type intact: callers map it to a not-found/forbidden status.
+		return nil, err
 	}
 
 	if !fs.conf.DisableHome {
