@@ -27,4 +27,11 @@ now names `eos`. That alone does not make the mount work, because the `eos`
 driver does not jail users into their home; the option that restores it is added
 in the follow-up change.
 
+The reva image was still built on `eos-all:5.2.14` while the storage container
+runs the `eos-ci:58d1e5d9.el9` release. The driver shells out to the `eos` CLI,
+and the 5.2.14 client does not know `newfind --skip-version-dirs`, so every
+`ListContainer` died with `exit 22` and the usage text (surfaced as a
+permission error) and collection COPY/MOVE answered `500`. Both images now use
+the same EOS release.
+
 https://github.com/Eiji-Kondo/reva/pull/10

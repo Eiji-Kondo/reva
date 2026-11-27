@@ -30,7 +30,11 @@ ENV CGO_ENABLED 0
 RUN apk add --no-cache make bash
 RUN make revad
 
-FROM gitlab-registry.cern.ch/dss/eos/eos-all:5.2.14
+# Same EOS release as the storage container (tests/docker/eos-storage). The eos
+# driver talks to the MGM through the `eos` CLI, and releases as old as 5.2.14 do
+# not understand flags the driver relies on (`newfind --skip-version-dirs`), which
+# makes every ListContainer fail against a newer MGM.
+FROM gitlab-registry.cern.ch/dss/eos/eos-ci:58d1e5d9.el9
 
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /home/reva/cmd/revad/revad /usr/bin/revad
